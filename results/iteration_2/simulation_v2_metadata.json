@@ -1,0 +1,15 @@
+{
+  "temperature": 298.15,
+  "viscosity": 0.001,
+  "mean_particle_radius_nm": 50.0,
+  "std_particle_radius_nm": 4.5,
+  "frame_size": [
+    2048,
+    2048
+  ],
+  "pixel_size_nm": 100.0,
+  "diffusion_time": 0.01,
+  "num_particles": 100,
+  "num_frames": 100,
+  "tif_bit_depth": 16
+}
