@@ -1,6 +1,6 @@
 # Large result files
-results/test_3_particles_3d/*.gif
-results/**/*.gif
+simulation/results/test_3_particles_3d/*.gif
+simulation/results/**/*.gif
 *.gif
 
 # Python
@@ -40,58 +40,10 @@ wheels/
 ehthumbs.db
 Thumbs.db
 
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-*.manifest
-*.spec
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Virtual environments
-venv/
-ENV/
-env/
-
-# IDE specific files
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS specific files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
 # Large data files
 *.tif
 *.tiff
 
 # Keep sample data
-!results/tracked_sequence_50p/tracked_sequence_50p.gif
-!results/iteration_3/simulation_v3.gif 
+!simulation/results/tracked_sequence_50p/tracked_sequence_50p.gif
+!simulation/results/iteration_3/simulation_v3.gif 
