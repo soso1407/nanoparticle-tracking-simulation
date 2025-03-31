@@ -1,0 +1,42 @@
+{
+  "temperature": 298.15,
+  "viscosity": 0.001,
+  "mean_particle_radius": 5e-08,
+  "std_particle_radius": 1e-08,
+  "frame_size": [
+    512,
+    512
+  ],
+  "pixel_size": 1e-07,
+  "z_range": [
+    -1e-05,
+    1e-05
+  ],
+  "focal_plane": 0.0,
+  "depth_of_field": 2e-06,
+  "diffusion_time": 0.1,
+  "num_particles": 100,
+  "gaussian_sigma": 1.0,
+  "brightness_factor": 1.0,
+  "snr_base": 5.0,
+  "snr_scaling": 2.0,
+  "background_noise": 0.12,
+  "noise_floor": 50.0,
+  "noise_ceiling": 2500.0,
+  "pixel_value_range": [
+    359,
+    57845
+  ],
+  "pixel_value_percentiles": {
+    "0": 359,
+    "25": 1819,
+    "50": 2439,
+    "75": 3292,
+    "90": 4283,
+    "95": 4998,
+    "99": 6646,
+    "99.999": 49234
+  },
+  "tif_bit_depth": 16,
+  "add_camera_noise": true
+}

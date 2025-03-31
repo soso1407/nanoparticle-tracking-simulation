@@ -21,6 +21,7 @@ from scipy.ndimage import gaussian_filter
 from mpl_toolkits.mplot3d import Axes3D
 import time
 
+from tqdm import tqdm
 
 class ParticleTrack3D:
     """Class to store information about the track of a particle in 3D."""
@@ -151,13 +152,13 @@ class NanoparticleSimulator3D:
                  num_particles: int = 100,
                  gaussian_sigma: float = 2.0,
                  brightness_factor: float = 1.0,
-                 snr_base: float = 5.0,        # Base SNR for smallest particle
-                 snr_scaling: float = 2.0,     # How SNR scales with radius
-                 background_noise: float = 0.12,  # Background noise level (0-1)
-                 noise_floor: float = 50.0,    # Baseline noise floor (in 16-bit scale)
-                 noise_ceiling: float = 2500.0, # Maximum expected pixel value (in 16-bit scale)
-                 add_camera_noise: bool = True, # Whether to add realistic camera noise
-                 iteration: int = 3):
+                 snr_base: float = 5.0,                 # Base SNR for smallest particle
+                 snr_scaling: float = 2.0,              # How SNR scales with radius
+                 background_noise_alpha: float = 0.2,   # Background noise level (0-1)
+                 background_noise_beta: float = 0.02,   
+                 noise_floor: float = 50,               # Baseline noise floor (in 16-bit scale)
+                 noise_ceiling: float = 2500.0,         # Maximum expected pixel value (in 16-bit scale)
+                 sim_name: str = "sim"):
         """
         Initialize the simulator.
         
@@ -181,7 +182,7 @@ class NanoparticleSimulator3D:
             noise_floor: Minimum pixel value for background (0-65535).
             noise_ceiling: Maximum expected pixel value (0-65535).
             add_camera_noise: Whether to add realistic camera noise.
-            iteration: Iteration number for output directory naming.
+            sim_name: simulation name for output directory.
         """
         self.temperature = temperature
         self.viscosity = viscosity
@@ -198,13 +199,13 @@ class NanoparticleSimulator3D:
         self.brightness_factor = brightness_factor
         self.snr_base = snr_base
         self.snr_scaling = snr_scaling
-        self.background_noise = background_noise
+        self.background_noise_alpha = background_noise_alpha
+        self.background_noise_beta = background_noise_beta
         self.noise_floor = noise_floor / 65535.0  # Convert to 0-1 range
         self.noise_ceiling = noise_ceiling / 65535.0  # Convert to 0-1 range
-        self.add_camera_noise = add_camera_noise
         
         # Set up the output directory
-        self.output_dir = os.path.join('results', f'iteration_{iteration}')
+        self.output_dir = os.path.join('results', sim_name)
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Boltzmann constant
@@ -505,8 +506,9 @@ class NanoparticleSimulator3D:
         start_time = time.time()
         
         # Iterate through frames
-        for frame_num in range(num_frames):
+        for frame_num in tqdm(range(num_frames), desc="Generating Frames"):
             # Print progress
+            '''
             if frame_num % 10 == 0:
                 elapsed_time = time.time() - start_time
                 print(f"Generating frame {frame_num}/{num_frames}...")
@@ -516,28 +518,31 @@ class NanoparticleSimulator3D:
                     remaining_time = remaining_frames / frames_per_second
                     print(f"  Progress: {frame_num/num_frames*100:.1f}% complete")
                     print(f"  Estimated remaining time: {remaining_time:.1f} seconds")
+            '''
             
             # Create a blank frame with baseline noise
             # Use noise floor as base level instead of zero
             frame = np.ones(self.frame_size, dtype=np.float32) * self.noise_floor
             
             # Add realistic background noise (more representative of microscopy data)
-            if self.background_noise > 0:
+            if True:
                 # Use gamma distribution for more realistic microscopy noise
                 # (slightly skewed with longer tail than normal distribution)
-                shape = 2.0  # Shape parameter for gamma distribution
-                scale = self.background_noise / 2.0  # Scale parameter
+                shape = self.background_noise_alpha
+                scale = self.background_noise_beta
                 
                 # Generate gamma-distributed noise
                 noise = np.random.gamma(shape=shape, scale=scale, size=self.frame_size)
                 
                 # Add the noise to the frame
-                frame += noise
+                frame += noise        
                 
                 # Add slight spatial correlation to simulate optical system noise
                 # This makes the noise pattern more natural than pure random noise
                 if np.random.random() < 0.7:  # Only apply to some frames for variety
                     frame = gaussian_filter(frame, sigma=0.5)
+
+            
             
             # Draw particles with z-dependent brightness
             for i in range(self.num_particles):
@@ -582,7 +587,8 @@ class NanoparticleSimulator3D:
                         relative_distance = (z_distance - self.depth_of_field/2) / self.depth_of_field
                         defocus_factor = 1.25 + min(3, relative_distance * 2)
                     
-                    sigma = base_sigma * defocus_factor
+                    #sigma = base_sigma * defocus_factor
+                    sigma = base_sigma
                     
                     # Convert position to integer coordinates
                     xi, yi = int(round(x)), int(round(y))
@@ -632,7 +638,8 @@ class NanoparticleSimulator3D:
                 )
             
             # Add camera noise effects if enabled
-            if self.add_camera_noise:
+            # we were told to ignore all camera noise and distortion
+            if False: #self.add_camera_noise:
                 # Add read noise (multiplicative)
                 read_noise = np.random.normal(1, 0.01, self.frame_size)  # 1% variation
                 frame = frame * read_noise
@@ -787,7 +794,8 @@ class NanoparticleSimulator3D:
             'brightness_factor': self.brightness_factor,
             'snr_base': self.snr_base,
             'snr_scaling': self.snr_scaling,
-            'background_noise': self.background_noise,
+            'background_noise_alpha': self.background_noise_alpha,
+            'background_noise_beta': self.background_noise_beta,
             'noise_floor': self.noise_floor * 65535.0,  # Convert back to 16-bit scale
             'noise_ceiling': self.noise_ceiling * 65535.0,  # Convert back to 16-bit scale
             'pixel_value_range': [
@@ -798,7 +806,7 @@ class NanoparticleSimulator3D:
                 k: int(v * 65535) for k, v in self.pixel_value_stats['percentiles'].items()
             },
             'tif_bit_depth': 16,
-            'add_camera_noise': self.add_camera_noise
+            #'add_camera_noise': self.add_camera_noise
         }
         
         # Save metadata to JSON
@@ -968,31 +976,14 @@ class NanoparticleSimulator3D:
         print(f"Saved depth vs. brightness plot to {output_path}")
 
 
-def main():
+def main(temperature, viscosity, mean_particle_radius, std_particle_radius, frame_size, pixel_size, z_range, focal_plane, 
+         depth_of_field, diffusion_time, num_particles, gaussian_sigma, brightness_factor, snr_base, snr_scaling, 
+         background_noise_alpha, background_noise_beta, noise_floor, noise_ceiling, sim_name):
     """Run the 3D nanoparticle simulation."""
     # Create simulator with default parameters
-    simulator = NanoparticleSimulator3D(
-        temperature=298.15,            # Room temperature
-        viscosity=1.0e-3,              # Water viscosity
-        mean_particle_radius=50e-9,    # 50 nm radius (100 nm diameter) 
-        std_particle_radius=10e-9,     # 10 nm std dev (~20 nm for diameter)
-        frame_size=(512, 512),         # Frame size
-        pixel_size=100e-9,             # Pixel size (100 nm)
-        z_range=(-10e-6, 10e-6),       # -10 to 10 micrometers in z
-        focal_plane=0.0,               # Focal plane at z=0
-        depth_of_field=2e-6,           # 2 micrometer depth of field
-        diffusion_time=0.1,            # Time between frames
-        num_particles=100,             # Number of particles
-        gaussian_sigma=2.0,            # Base sigma for Gaussian
-        brightness_factor=1.0,         # Brightness scaling factor
-        snr_base=5.0,                  # Base SNR for smallest particle
-        snr_scaling=2.0,               # SNR scaling with size
-        background_noise=0.12,         # Increased background noise for realism
-        noise_floor=50.0,              # Baseline noise floor (in 16-bit scale)
-        noise_ceiling=2500.0,          # Maximum expected pixel value (in 16-bit scale)
-        add_camera_noise=True,         # Add realistic camera noise
-        iteration=3                    # Iteration number for directory
-    )
+    simulator = NanoparticleSimulator3D(temperature, viscosity, mean_particle_radius, std_particle_radius, frame_size, pixel_size, z_range, focal_plane, 
+                                        depth_of_field, diffusion_time, num_particles, gaussian_sigma, brightness_factor, snr_base, snr_scaling,
+                                        background_noise_alpha, background_noise_beta, noise_floor, noise_ceiling, sim_name)
     
     # Plot size distribution
     simulator.plot_size_distribution()
@@ -1009,7 +1000,7 @@ def main():
     simulator.plot_3d_positions()
     simulator.plot_depth_vs_brightness()
     
-    print("3D simulation complete. Results saved in 'results/iteration_3' directory.")
+    print(f"3D simulation complete. Results saved in 'results/{sim_name}' directory.")
 
 
 def create_sequence_for_tracking(num_frames=30, num_particles=50, output_prefix="tracked_sequence"):
