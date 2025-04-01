@@ -1,0 +1,60 @@
+# Large result files
+simulation/results/test_3_particles_3d/*.gif
+simulation/results/**/*.gif
+*.gif
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Large data files
+*.tif
+*.tiff
+
+# Keep sample data
+!simulation/results/tracked_sequence_50p/tracked_sequence_50p.gif
+!simulation/results/iteration_3/simulation_v3.gif
+
+# Results and data
+results/
+*.png
+*.jpg
+*.jpeg 
