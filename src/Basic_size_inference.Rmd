@@ -1,0 +1,151 @@
+---
+title: "Basic Particle Size inference"
+author: "William Chestnut"
+date: "2025-03-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(bayesrules)
+library(LearnBayes)
+```
+
+
+
+## Import tracks dataset
+
+```{r}
+library(readxl)
+
+df <- read_excel("results/test_1/ground_and_trackPy_output.xlsx", sheet=1)
+
+```
+```{r}
+head(df)
+
+```
+
+
+
+
+```{r}
+
+particle_1 = df[df$particle == 1, ]
+
+head(particle_1)
+
+```
+```{r}
+
+x_dists = c()
+y_dists = c()
+
+frames <- particle_1$frame
+g_xs <- particle_1$g_x
+g_ys <- particle_1$g_y
+
+for (i in seq_len(nrow(particle_1) - 1)){
+  if (frames[i + 1] - frames[i] == 1){
+    x_dist = g_xs[i + 1] - g_xs[i]
+    y_dist = g_ys[i + 1] - g_ys[i]
+    
+    x_dists <- c(x_dists, x_dist)
+    y_dists <- c(y_dists, y_dist)
+    
+  }
+}
+
+```
+
+
+```{r}
+x_dists
+y_dists
+
+```
+
+
+
+
+# Use Bayes's equation
+
+### appoximate normal prior with Gamma distribution
+```{r}
+
+# approximate particle size normal distribution with a gamma distribution
+# alpha = mu^2 / sigma^2
+# beta = mu^2 / sigma^2
+
+particle_norm_mu = 5 * 10^(-8)
+particle_norm_sigma = 1 * 10^(-8)
+
+
+prior_alpha = (particle_norm_mu^2) / (particle_norm_sigma^2)
+prior_beta = (particle_norm_mu) / (particle_norm_sigma^2)
+
+
+prior_alpha
+prior_beta
+```
+
+Looking at a Gamma distribution graphing tool, this approximation isn't terrible
+
+
+
+### Calculate posterior distribution
+```{r}
+
+## create array of x and y deltas
+pixel_movements = c(x_dists, y_dists)
+
+## multiply pixel movements by pixel size
+pixel_size = 1 * 10^-7
+movements = pixel_movements * pixel_size
+
+
+posterior_alpha = prior_alpha + (length(movements) / 2)
+
+posterior_beta = prior_beta + (sum(movements) / 2)
+
+posterior_alpha
+posterior_beta
+
+
+
+# calculate C
+delta_t = 0.1 # 100 milliseconds
+k_B = 1.380649e-23
+Temp = 298.15 #K
+viscosity = 0.001
+
+C = (delta_t * k_B * Temp) / (3 * pi * viscosity)
+C
+
+```
+
+
+```{r}
+posterior_alpha_final = posterior_alpha
+posterior_beta_final = posterior_beta / C
+
+posterior_alpha_final
+posterior_beta_final
+
+```
+```{r}
+summarize_gamma(shape=posterior_alpha_final, rate=(1/posterior_beta_final))
+
+```
+
+```{r}
+
+
+```
+
+
+
