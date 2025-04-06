@@ -9,6 +9,8 @@ __pycache__/
 *$py.class
 *.so
 .Python
+venv/
+ENV/
 build/
 develop-eggs/
 dist/
@@ -25,14 +27,9 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
-venv/
-ENV/
-env/
-
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
 
@@ -53,8 +50,7 @@ Thumbs.db
 !simulation/results/tracked_sequence_50p/tracked_sequence_50p.gif
 !simulation/results/iteration_3/simulation_v3.gif
 
-# Results and data
-results/
-*.png
-*.jpg
-*.jpeg 
+# Simulation results
+simulation/results/**/*.gif
+simulation/results/**/*.tif
+simulation/results/**/ 
