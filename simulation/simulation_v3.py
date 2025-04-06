@@ -144,45 +144,23 @@ class NanoparticleSimulator3D:
                  std_particle_radius: float = 10e-9,
                  frame_size: Tuple[int, int] = (512, 512),
                  pixel_size: float = 100e-9,
-                 z_range: Tuple[float, float] = (-10e-6, 10e-6),  # z range in meters
-                 focal_plane: float = 0.0,                        # z position of focal plane
-                 depth_of_field: float = 2e-6,                    # depth of field in meters
+                 z_range: Tuple[float, float] = (-10e-6, 10e-6),
+                 focal_plane: float = 0.0,
                  diffusion_time: float = 0.1,
                  num_particles: int = 100,
-                 gaussian_sigma: float = 2.0,
+                 wavelength: float = 550e-9,
+                 numerical_aperture: float = 1.4,  # Added NA parameter
                  brightness_factor: float = 1.0,
-                 snr_base: float = 5.0,        # Base SNR for smallest particle
-                 snr_scaling: float = 2.0,     # How SNR scales with radius
+                 asymmetry_factor: float = 0.1,
+                 characteristic_length: Optional[float] = None,
+                 particle_density: float = 1.05e3,
+                 medium_density: float = 1.00e3,
                  background_noise: float = 0.12,  # Background noise level (0-1)
                  noise_floor: float = 50.0,    # Baseline noise floor (in 16-bit scale)
                  noise_ceiling: float = 2500.0, # Maximum expected pixel value (in 16-bit scale)
                  add_camera_noise: bool = True, # Whether to add realistic camera noise
                  iteration: int = 3):
-        """
-        Initialize the simulator.
-        
-        Args:
-            temperature: The temperature in Kelvin.
-            viscosity: The viscosity in Pa·s.
-            mean_particle_radius: The mean radius of the particles in meters.
-            std_particle_radius: The standard deviation of the particle radius in meters.
-            frame_size: The size of the frame in pixels (width, height).
-            pixel_size: The size of a pixel in meters.
-            z_range: The range of z values in meters (min, max).
-            focal_plane: The z position of the focal plane in meters.
-            depth_of_field: The depth of field in meters (total depth).
-            diffusion_time: The time between frames in seconds.
-            num_particles: The number of particles to simulate.
-            gaussian_sigma: The sigma parameter for the Gaussian kernel.
-            brightness_factor: A scaling factor for particle brightness.
-            snr_base: Base signal-to-noise ratio for smallest particle.
-            snr_scaling: How SNR scales with particle radius.
-            background_noise: Level of background noise (0-1).
-            noise_floor: Minimum pixel value for background (0-65535).
-            noise_ceiling: Maximum expected pixel value (0-65535).
-            add_camera_noise: Whether to add realistic camera noise.
-            iteration: Iteration number for output directory naming.
-        """
+        """Initialize the simulator with physically-based Gaussian sigma."""
         self.temperature = temperature
         self.viscosity = viscosity
         self.mean_particle_radius = mean_particle_radius
@@ -191,13 +169,25 @@ class NanoparticleSimulator3D:
         self.pixel_size = pixel_size
         self.z_range = z_range
         self.focal_plane = focal_plane
-        self.depth_of_field = depth_of_field
         self.diffusion_time = diffusion_time
         self.num_particles = num_particles
-        self.gaussian_sigma = gaussian_sigma
+        self.wavelength = wavelength
+        self.numerical_aperture = numerical_aperture
         self.brightness_factor = brightness_factor
-        self.snr_base = snr_base
-        self.snr_scaling = snr_scaling
+        self.asymmetry_factor = asymmetry_factor
+        self.particle_density = particle_density
+        self.medium_density = medium_density
+        
+        # Calculate buoyancy factor
+        self.buoyancy_factor = (particle_density - medium_density) / particle_density
+        
+        # Calculate characteristic length based on wavelength if not provided
+        if characteristic_length is None:
+            # Characteristic length scales with wavelength
+            self.characteristic_length = wavelength * 4
+        else:
+            self.characteristic_length = characteristic_length
+        
         self.background_noise = background_noise
         self.noise_floor = noise_floor / 65535.0  # Convert to 0-1 range
         self.noise_ceiling = noise_ceiling / 65535.0  # Convert to 0-1 range
@@ -207,27 +197,19 @@ class NanoparticleSimulator3D:
         self.output_dir = os.path.join('results', f'iteration_{iteration}')
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Boltzmann constant
-        self.k_B = 1.380649e-23  # J/K
-        
         # Generate particle radii
         self.particle_radii = np.random.normal(
             mean_particle_radius, std_particle_radius, num_particles)
         # Ensure no negative radii
         self.particle_radii = np.abs(self.particle_radii)
         
-        # Calculate diffusion coefficients using Stokes-Einstein equation
-        self.diffusion_coefficients = self._calculate_diffusion_coefficients()
+        # Add epsilon values for numerical stability
+        self.epsilon_brightness = 1e-10  # For brightness calculation
+        self.epsilon_radius = 1e-9      # For radius calculation
         
         # Calculate brightness values
         self.raw_brightnesses = self._calculate_raw_brightnesses()
         self.brightnesses = self._normalize_brightnesses(self.raw_brightnesses)
-        
-        # Calculate signal-to-noise ratio for each particle based on size
-        self.snr_values = self._calculate_snr_values()
-        
-        # Calculate brightness uncertainty based on SNR
-        self.brightness_uncertainties = self._calculate_brightness_uncertainties()
         
         # Initialize particle positions (3D)
         self.positions = self._initialize_positions()
@@ -242,29 +224,27 @@ class NanoparticleSimulator3D:
             'mean': 0,
             'percentiles': {}
         }
-    
-    def _calculate_diffusion_coefficients(self) -> np.ndarray:
-        """
-        Calculate the diffusion coefficients for all particles.
         
-        Returns:
-            Array of diffusion coefficients in m²/s.
-        """
-        # Stokes-Einstein equation: D = k_B * T / (6 * pi * eta * r)
-        return self.k_B * self.temperature / (6 * np.pi * self.viscosity * self.particle_radii)
+        # Calculate diffraction-limited spot size
+        diffraction_limit = wavelength / (2 * numerical_aperture)
+        
+        # Convert diffraction limit to pixels and ensure Nyquist sampling
+        self.gaussian_sigma = (diffraction_limit / pixel_size) * (2/2.355)  # 2.355 converts FWHM to sigma
+        
+        print(f"Physical parameters:")
+        print(f"- Wavelength: {wavelength*1e9:.0f} nm")
+        print(f"- Numerical aperture: {numerical_aperture}")
+        print(f"- Diffraction limit: {diffraction_limit*1e9:.0f} nm")
+        print(f"- Pixel size: {pixel_size*1e9:.0f} nm")
+        print(f"- Base sigma: {self.gaussian_sigma:.2f} pixels")
     
     def _calculate_raw_brightnesses(self) -> np.ndarray:
-        """
-        Calculate the raw brightness values based on particle volume.
+        """Calculate raw brightness values based on Rayleigh scattering."""
+        # Rayleigh scattering intensity proportional to r⁶/λ⁴
+        raw_brightnesses = (self.particle_radii ** 6) / (self.wavelength ** 4) + self.epsilon_brightness
         
-        In this version, brightness scales with volume (r³) to better reflect
-        light scattering physics for nanoparticles.
-        
-        Returns:
-            Array of raw brightness values.
-        """
-        # Brightness proportional to volume (r³)
-        return 4/3 * np.pi * (self.particle_radii ** 3)
+        # Normalize to [0,1] range
+        return raw_brightnesses / raw_brightnesses.max()
     
     def _normalize_brightnesses(self, raw_brightnesses: np.ndarray) -> np.ndarray:
         """
@@ -285,55 +265,27 @@ class NanoparticleSimulator3D:
         # Apply brightness factor
         return normalized * self.brightness_factor
     
-    def _calculate_snr_values(self) -> np.ndarray:
-        """
-        Calculate the Signal-to-Noise Ratio (SNR) for each particle.
-        
-        The SNR increases with particle size, as larger particles scatter
-        more light and produce a stronger signal.
-        
-        Returns:
-            Array of SNR values.
-        """
-        # Normalize radii for scaling
-        normalized_radii = self.particle_radii / self.particle_radii.min()
-        
-        # Calculate SNR with power law scaling
-        snr = self.snr_base * (normalized_radii ** self.snr_scaling)
-        
-        # Ensure minimum SNR of 1.0
-        snr = np.maximum(snr, 1.0)
-        
-        return snr
-    
-    def _calculate_brightness_uncertainties(self) -> np.ndarray:
-        """
-        Calculate brightness uncertainty based on SNR.
-        
-        Uncertainty is inversely proportional to SNR:
-        uncertainty = brightness / SNR
-        
-        Returns:
-            Array of brightness uncertainties.
-        """
-        return self.brightnesses / self.snr_values
-    
     def _initialize_positions(self) -> np.ndarray:
         """
         Initialize the positions of all particles in 3D space.
         
         Modified to create a more balanced distribution of particles across
         the z-range, ensuring particles appear at all distances from the focal plane.
+        Physical positions are stored in meters, but x,y are converted from pixels.
         
         Returns:
-            Array of particle positions (num_particles, 3).
+            Array of particle positions (num_particles, 3) in meters.
         """
-        # Random positions within the frame
+        # Initialize positions array (in meters)
         positions = np.zeros((self.num_particles, 3))
         
-        # x, y positions in pixels - uniform distribution
-        positions[:, 0] = np.random.uniform(0, self.frame_size[0], self.num_particles)
-        positions[:, 1] = np.random.uniform(0, self.frame_size[1], self.num_particles)
+        # x, y positions in meters - uniform distribution across frame
+        # Convert frame size from pixels to meters
+        frame_width_meters = self.frame_size[0] * self.pixel_size
+        frame_height_meters = self.frame_size[1] * self.pixel_size
+        
+        positions[:, 0] = np.random.uniform(0, frame_width_meters, self.num_particles)
+        positions[:, 1] = np.random.uniform(0, frame_height_meters, self.num_particles)
         
         # For z-positions, create a stratified distribution to ensure coverage at all distances
         z_min, z_max = self.z_range
@@ -401,49 +353,55 @@ class NanoparticleSimulator3D:
         return positions
     
     def _calculate_focal_attenuation(self, z_position: float) -> float:
-        """
-        Calculate the brightness attenuation due to distance from the focal plane.
+        """Calculate brightness attenuation with numerical stability."""
+        # Calculate distance from focal plane
+        distance = z_position - self.focal_plane
         
-        Uses a modified Gaussian function centered at the focal plane with the depth of field
-        determining the spread. Modified to make particles at medium distances more visible.
+        # Normalized distance (relative to characteristic length)
+        normalized_distance = distance / self.characteristic_length
+        
+        # Calculate attenuation using asymmetric Lorentzian
+        attenuation = 1.0 / (1.0 + normalized_distance**2 + 
+                            self.asymmetry_factor * abs(normalized_distance)) + self.epsilon_brightness
+        
+        # Ensure minimum visibility threshold
+        return max(0.05, attenuation)
+    
+    def _apply_brightness_calculations(self, particle_index: int, z_position: float) -> float:
+        """
+        Apply complete brightness calculation for a single particle.
+        
+        The final brightness is calculated as:
+        brightness = base_brightness * focal_attenuation
         
         Args:
+            particle_index: Index of the particle.
             z_position: Z position of the particle in meters.
             
         Returns:
-            Attenuation factor between 0 and 1.
+            Final calculated brightness value.
         """
-        # Distance from focal plane
-        distance = abs(z_position - self.focal_plane)
+        # Get base brightness (from particle volume)
+        base_brightness = self.brightnesses[particle_index]
         
-        # Modified Gaussian attenuation with depth of field as sigma
-        # Increased sigma and added a minimum attenuation floor
+        # Calculate attenuation from focal plane distance
+        focal_attenuation = self._calculate_focal_attenuation(z_position)
         
-        # Normalize distance to depth of field
-        normalized_distance = distance / (self.depth_of_field/2)
+        # Combine base brightness and attenuation
+        final_brightness = base_brightness * focal_attenuation
         
-        # Core attenuation calculation - modified Gaussian with longer falloff
-        if normalized_distance <= 1:
-            # Within depth of field - use high attenuation (80-100%)
-            attenuation = 1.0 - 0.2 * (normalized_distance ** 2)
-        elif normalized_distance <= 3:
-            # Medium distance - gentler falloff (20-80%)
-            attenuation = 0.8 * np.exp(-0.3 * ((normalized_distance - 1) ** 2))
-        else:
-            # Far distance - exponential falloff with minimum floor
-            attenuation = max(0.05, 0.2 * np.exp(-0.2 * (normalized_distance - 3)))
-        
-        return attenuation
+        return final_brightness
     
     def _move_particles(self) -> None:
         """
         Move all particles according to Brownian motion in 3D.
+        All positions and calculations are in meters.
         """
         # Calculate the step size for each particle based on diffusion coefficient
         # Standard deviation of the displacement is sqrt(2 * D * dt) in each dimension
-        std_devs = np.sqrt(2 * self.diffusion_coefficients * self.diffusion_time)
+        std_devs = np.sqrt(2 * self._calculate_diffusion_coefficient(self.mean_particle_radius) * self.diffusion_time)
         
-        # Generate random displacements in all three dimensions
+        # Generate random displacements in all three dimensions (in meters)
         displacements = np.zeros((self.num_particles, 3))
         for i in range(3):  # x, y, z dimensions
             displacements[:, i] = np.random.normal(0, std_devs)
@@ -451,19 +409,22 @@ class NanoparticleSimulator3D:
         # Update positions
         self.positions += displacements
         
-        # Keep particles within frame boundaries (x and y)
+        # Keep particles within frame boundaries (x and y in meters)
+        frame_width_meters = self.frame_size[0] * self.pixel_size
+        frame_height_meters = self.frame_size[1] * self.pixel_size
+        
         for i in range(self.num_particles):
             # x boundary (horizontal)
             if self.positions[i, 0] < 0:
                 self.positions[i, 0] = abs(self.positions[i, 0])
-            elif self.positions[i, 0] >= self.frame_size[0]:
-                self.positions[i, 0] = 2 * self.frame_size[0] - self.positions[i, 0]
+            elif self.positions[i, 0] >= frame_width_meters:
+                self.positions[i, 0] = 2 * frame_width_meters - self.positions[i, 0]
             
             # y boundary (vertical)
             if self.positions[i, 1] < 0:
                 self.positions[i, 1] = abs(self.positions[i, 1])
-            elif self.positions[i, 1] >= self.frame_size[1]:
-                self.positions[i, 1] = 2 * self.frame_size[1] - self.positions[i, 1]
+            elif self.positions[i, 1] >= frame_height_meters:
+                self.positions[i, 1] = 2 * frame_height_meters - self.positions[i, 1]
             
             # z boundary (depth)
             if self.positions[i, 2] < self.z_range[0]:
@@ -471,34 +432,8 @@ class NanoparticleSimulator3D:
             elif self.positions[i, 2] >= self.z_range[1]:
                 self.positions[i, 2] = 2 * self.z_range[1] - self.positions[i, 2]
     
-    def _apply_random_brightness_fluctuation(self, brightness: float, uncertainty: float) -> float:
-        """
-        Apply random fluctuation to brightness based on uncertainty.
-        
-        Args:
-            brightness: Base brightness value.
-            uncertainty: Uncertainty in brightness measurement.
-            
-        Returns:
-            Fluctuated brightness value.
-        """
-        # Apply random fluctuation based on normal distribution
-        fluctuation = np.random.normal(0, uncertainty)
-        fluctuated_brightness = brightness + fluctuation
-        
-        # Ensure brightness is non-negative
-        return max(0, fluctuated_brightness)
-    
     def run_simulation(self, num_frames: int = 100) -> List[Image.Image]:
-        """
-        Run the simulation for the specified number of frames.
-        
-        Args:
-            num_frames: The number of frames to simulate.
-            
-        Returns:
-            List of frame images.
-        """
+        """Run the simulation with continuous z-dependent blur."""
         frames = []
         
         # Start timing
@@ -518,7 +453,6 @@ class NanoparticleSimulator3D:
                     print(f"  Estimated remaining time: {remaining_time:.1f} seconds")
             
             # Create a blank frame with baseline noise
-            # Use noise floor as base level instead of zero
             frame = np.ones(self.frame_size, dtype=np.float32) * self.noise_floor
             
             # Add realistic background noise (more representative of microscopy data)
@@ -541,110 +475,60 @@ class NanoparticleSimulator3D:
             
             # Draw particles with z-dependent brightness
             for i in range(self.num_particles):
-                # Extract particle position (x, y are in pixels, z in meters)
-                x, y, z = self.positions[i]
+                # Convert physical position (meters) to pixel coordinates
+                x_pixels = self.positions[i, 0] / self.pixel_size
+                y_pixels = self.positions[i, 1] / self.pixel_size
+                z = self.positions[i, 2]  # Keep z in meters
                 
-                # Calculate attenuation based on z-position
-                focal_attenuation = self._calculate_focal_attenuation(z)
+                # Calculate final brightness for this particle
+                final_brightness = self._apply_brightness_calculations(i, z)
                 
-                # Only render particles that are not completely attenuated
-                # Lower threshold to see more particles at medium distances
-                if focal_attenuation > 0.005:  # Lower threshold from previous 0.01
-                    # Get base brightness and apply focal attenuation
-                    base_brightness = self.brightnesses[i]
-                    attenuated_brightness = base_brightness * focal_attenuation
-                    
-                    # Apply random fluctuation based on uncertainty
-                    uncertainty = self.brightness_uncertainties[i]
-                    fluctuated_brightness = self._apply_random_brightness_fluctuation(
-                        attenuated_brightness, uncertainty)
-                    
-                    # Skip rendering if brightness is too low (optimization)
-                    # Lower brightness threshold too
-                    if fluctuated_brightness < 0.0005:  # Lower from previous 0.001
-                        continue
-                    
-                    # Calculate Gaussian sigma based on particle size and z-distance
-                    # Larger particles have wider Gaussians
-                    # Particles away from focal plane have wider (more blurred) Gaussians
-                    base_sigma = self.gaussian_sigma * (self.particle_radii[i] / self.mean_particle_radius)
-                    
-                    # Add defocus blur based on distance from focal plane
-                    # Modified to create more natural blur progression
-                    z_distance = abs(z - self.focal_plane)
-                    
-                    # Adjusted defocus factor - gentler progression for realistic appearance
-                    if z_distance <= self.depth_of_field/2:
-                        # Within depth of field - minimal blur increase 
-                        defocus_factor = 1 + (z_distance / self.depth_of_field) * 0.5
-                    else:
-                        # Outside depth of field - steeper blur increase with distance
-                        relative_distance = (z_distance - self.depth_of_field/2) / self.depth_of_field
-                        defocus_factor = 1.25 + min(3, relative_distance * 2)
-                    
-                    sigma = base_sigma * defocus_factor
-                    
-                    # Convert position to integer coordinates
-                    xi, yi = int(round(x)), int(round(y))
-                    
-                    # Define the region around the particle to draw
-                    # Larger sigma means we need a larger window
-                    window_size = int(6 * sigma) + 1
-                    
-                    # Create bounds for the drawing window
-                    x_min = max(0, xi - window_size // 2)
-                    x_max = min(self.frame_size[0], xi + window_size // 2 + 1)
-                    y_min = max(0, yi - window_size // 2)
-                    y_max = min(self.frame_size[1], yi + window_size // 2 + 1)
-                    
-                    # Skip if the particle is entirely outside the frame
-                    if x_min >= x_max or y_min >= y_max:
-                        continue
-                    
-                    # Calculate coordinates for the Gaussian
-                    x_coords, y_coords = np.meshgrid(
-                        np.arange(x_min, x_max),
-                        np.arange(y_min, y_max)
-                    )
-                    
-                    # Calculate the Gaussian values
-                    gaussian = fluctuated_brightness * np.exp(
-                        -((x_coords - x)**2 + (y_coords - y)**2) / (2 * sigma**2)
-                    )
-                    
-                    # Add the Gaussian to the frame
-                    frame[y_min:y_max, x_min:x_max] += gaussian
+                # Skip rendering if brightness is too low
+                if final_brightness < 0.0005:
+                    continue
                 
-                # Record the particle's position and attributes for this frame
-                raw_brightness = self.raw_brightnesses[i]
-                snr = self.snr_values[i]
-                brightness_uncertainty = self.brightness_uncertainties[i]
+                # Calculate Gaussian sigma based on particle size and z-distance
+                base_sigma = self.gaussian_sigma * (self.particle_radii[i] / self.mean_particle_radius) + self.epsilon_radius
                 
-                self.tracks[i].add_position(
-                    frame=frame_num,
-                    position=(x, y, z),
-                    size=self.particle_radii[i],
-                    brightness=self.brightnesses[i],
-                    raw_brightness=raw_brightness,
-                    snr=snr,
-                    brightness_uncertainty=brightness_uncertainty,
-                    focal_attenuation=focal_attenuation
+                # Calculate z-dependent blur using characteristic length
+                z_distance = abs(z - self.focal_plane)
+                normalized_distance = z_distance / self.characteristic_length
+                
+                # Blur increases linearly with normalized distance, capped at maximum
+                defocus_factor = 1 + min(3, normalized_distance) + self.epsilon_radius
+                
+                sigma = base_sigma * defocus_factor
+                
+                # Convert position to integer coordinates
+                xi, yi = int(round(x_pixels)), int(round(y_pixels))
+                
+                # Define the region around the particle to draw
+                # Larger sigma means we need a larger window
+                window_size = int(6 * sigma) + 1
+                
+                # Create bounds for the drawing window
+                x_min = max(0, xi - window_size // 2)
+                x_max = min(self.frame_size[0], xi + window_size // 2 + 1)
+                y_min = max(0, yi - window_size // 2)
+                y_max = min(self.frame_size[1], yi + window_size // 2 + 1)
+                
+                # Skip if the particle is entirely outside the frame
+                if x_min >= x_max or y_min >= y_max:
+                    continue
+                
+                # Calculate coordinates for the Gaussian
+                x_coords, y_coords = np.meshgrid(
+                    np.arange(x_min, x_max),
+                    np.arange(y_min, y_max)
                 )
-            
-            # Add camera noise effects if enabled
-            if self.add_camera_noise:
-                # Add read noise (multiplicative)
-                read_noise = np.random.normal(1, 0.01, self.frame_size)  # 1% variation
-                frame = frame * read_noise
                 
-                # Add dark current noise (additive Poisson noise)
-                dark_current = np.random.poisson(0.5, self.frame_size) / 65535.0
-                frame += dark_current
+                # Calculate the Gaussian values
+                gaussian = final_brightness * np.exp(
+                    -((x_coords - x_pixels)**2 + (y_coords - y_pixels)**2) / (2 * sigma**2)
+                )
                 
-                # Add fixed pattern noise (spatially correlated)
-                if frame_num == 0:  # Only generate the pattern once for consistency
-                    self.fixed_pattern = np.random.normal(1, 0.005, self.frame_size)  # 0.5% variation
-                frame = frame * self.fixed_pattern
+                # Add the Gaussian to the frame
+                frame[y_min:y_max, x_min:x_max] += gaussian
             
             # Move particles for the next frame
             self._move_particles()
@@ -780,13 +664,11 @@ class NanoparticleSimulator3D:
             'pixel_size': self.pixel_size,
             'z_range': self.z_range,
             'focal_plane': self.focal_plane,
-            'depth_of_field': self.depth_of_field,
             'diffusion_time': self.diffusion_time,
             'num_particles': self.num_particles,
-            'gaussian_sigma': self.gaussian_sigma,
-            'brightness_factor': self.brightness_factor,
-            'snr_base': self.snr_base,
-            'snr_scaling': self.snr_scaling,
+            'wavelength': self.wavelength,
+            'numerical_aperture': self.numerical_aperture,
+            'characteristic_length': self.characteristic_length,
             'background_noise': self.background_noise,
             'noise_floor': self.noise_floor * 65535.0,  # Convert back to 16-bit scale
             'noise_ceiling': self.noise_ceiling * 65535.0,  # Convert back to 16-bit scale
@@ -857,15 +739,21 @@ class NanoparticleSimulator3D:
     def plot_3d_positions(self) -> None:
         """
         Plot the 3D positions of particles at the end of the simulation.
+        Converts positions to appropriate units for visualization.
         """
         fig = plt.figure(figsize=(12, 10))
         ax = fig.add_subplot(111, projection='3d')
+        
+        # Convert positions to appropriate units
+        x_microns = self.positions[:, 0] * 1e6  # Convert to microns
+        y_microns = self.positions[:, 1] * 1e6  # Convert to microns
+        z_microns = self.positions[:, 2] * 1e6  # Convert to microns
         
         # Get colormap for brightness visualization
         colors = plt.cm.viridis(self.brightnesses)
         
         # Get attenuation for each particle
-        attenuations = np.array([self._calculate_focal_attenuation(z) for _, _, z in self.positions])
+        attenuations = np.array([self._calculate_focal_attenuation(z) for z in self.positions[:, 2]])
         
         # Size factor for visualization (larger particles = larger markers)
         size_factor = 100
@@ -876,9 +764,9 @@ class NanoparticleSimulator3D:
         
         # Plot particles
         scatter = ax.scatter(
-            self.positions[visible_indices, 0], 
-            self.positions[visible_indices, 1], 
-            self.positions[visible_indices, 2],
+            x_microns[visible_indices], 
+            y_microns[visible_indices], 
+            z_microns[visible_indices],
             c=self.brightnesses[visible_indices],
             s=sizes[visible_indices],
             alpha=attenuations[visible_indices],
@@ -886,23 +774,23 @@ class NanoparticleSimulator3D:
         )
         
         # Draw the focal plane
-        x_range = np.linspace(0, self.frame_size[0], 10)
-        y_range = np.linspace(0, self.frame_size[1], 10)
+        x_range = np.linspace(0, self.frame_size[0] * self.pixel_size * 1e6, 10)  # Convert to microns
+        y_range = np.linspace(0, self.frame_size[1] * self.pixel_size * 1e6, 10)  # Convert to microns
         X, Y = np.meshgrid(x_range, y_range)
-        Z = np.ones_like(X) * self.focal_plane
+        Z = np.ones_like(X) * (self.focal_plane * 1e6)  # Convert to microns
         
         ax.plot_surface(X, Y, Z, alpha=0.2, color='gray')
         
         # Set axis labels and title
-        ax.set_xlabel('X Position (pixels)')
-        ax.set_ylabel('Y Position (pixels)')
-        ax.set_zlabel('Z Position (meters)')
+        ax.set_xlabel('X Position (µm)')
+        ax.set_ylabel('Y Position (µm)')
+        ax.set_zlabel('Z Position (µm)')
         ax.set_title('3D Particle Positions')
         
         # Set axis limits
-        ax.set_xlim(0, self.frame_size[0])
-        ax.set_ylim(0, self.frame_size[1])
-        ax.set_zlim(self.z_range[0], self.z_range[1])
+        ax.set_xlim(0, self.frame_size[0] * self.pixel_size * 1e6)  # Convert to microns
+        ax.set_ylim(0, self.frame_size[1] * self.pixel_size * 1e6)  # Convert to microns
+        ax.set_zlim(self.z_range[0] * 1e6, self.z_range[1] * 1e6)  # Convert to microns
         
         # Add color bar for brightness
         cbar = plt.colorbar(scatter)
@@ -935,11 +823,6 @@ class NanoparticleSimulator3D:
         # Mark the focal plane
         plt.axvline(x=self.focal_plane * 1e6, color='r', linestyle='--', 
                   label=f'Focal Plane (z={self.focal_plane*1e6:.1f} µm)')
-        
-        # Mark the depth of field boundaries
-        plt.axvline(x=(self.focal_plane + self.depth_of_field/2) * 1e6, color='g', linestyle=':', 
-                  label=f'Depth of Field (±{self.depth_of_field/2*1e6:.1f} µm)')
-        plt.axvline(x=(self.focal_plane - self.depth_of_field/2) * 1e6, color='g', linestyle=':')
         
         # Add scatter points for actual particles
         z_positions_actual = [pos[2] for pos in self.positions]
@@ -980,13 +863,15 @@ def main():
         pixel_size=100e-9,             # Pixel size (100 nm)
         z_range=(-10e-6, 10e-6),       # -10 to 10 micrometers in z
         focal_plane=0.0,               # Focal plane at z=0
-        depth_of_field=2e-6,           # 2 micrometer depth of field
         diffusion_time=0.1,            # Time between frames
         num_particles=100,             # Number of particles
-        gaussian_sigma=2.0,            # Base sigma for Gaussian
+        wavelength=550e-9,             # Default 550nm (green light)
+        numerical_aperture=1.4,        # Added NA parameter
         brightness_factor=1.0,         # Brightness scaling factor
-        snr_base=5.0,                  # Base SNR for smallest particle
-        snr_scaling=2.0,               # SNR scaling with size
+        asymmetry_factor=0.1,          # Slight asymmetry in z-attenuation
+        characteristic_length=None,   # Will be set based on wavelength
+        particle_density=1.05e3,        # Default: polystyrene density in kg/m³
+        medium_density=1.00e3,         # Default: water density in kg/m³
         background_noise=0.12,         # Increased background noise for realism
         noise_floor=50.0,              # Baseline noise floor (in 16-bit scale)
         noise_ceiling=2500.0,          # Maximum expected pixel value (in 16-bit scale)
