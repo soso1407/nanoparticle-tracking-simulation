@@ -155,16 +155,16 @@ class NanoparticleSimulator3D:
                  diffusion_time: float = 0.1,
                  num_particles: int = 100,
                  wavelength: float = 550e-9,
-                 numerical_aperture: float = 1.4,  # Added NA parameter
+                 numerical_aperture: float = 1.4,
                  brightness_factor: float = 1.0,
                  asymmetry_factor: float = 0.1,
                  characteristic_length: Optional[float] = None,
                  particle_density: float = 1.05e3,
                  medium_density: float = 1.00e3,
-                 background_noise: float = 0.12,  # Background noise level (0-1)
-                 noise_floor: float = 50.0,    # Baseline noise floor (in 16-bit scale)
-                 noise_ceiling: float = 2500.0, # Maximum expected pixel value (in 16-bit scale)
-                 add_camera_noise: bool = True, # Whether to add realistic camera noise
+                 background_noise: float = 0.12,
+                 noise_floor: float = 50.0,
+                 noise_ceiling: float = 2500.0,
+                 add_camera_noise: bool = True,
                  iteration: int = 3):
         """Initialize the simulator with physically-based Gaussian sigma."""
         self.temperature = temperature
@@ -208,10 +208,6 @@ class NanoparticleSimulator3D:
             mean_particle_radius, std_particle_radius, num_particles)
         # Ensure no negative radii
         self.particle_radii = np.abs(self.particle_radii)
-        
-        # Add epsilon values for numerical stability
-        self.epsilon_brightness = 1e-10  # For brightness calculation
-        self.epsilon_radius = 1e-9      # For radius calculation
         
         # Calculate raw physical brightnesses
         self.raw_brightnesses = self._calculate_raw_brightnesses()
@@ -456,7 +452,6 @@ class NanoparticleSimulator3D:
             # Add realistic background noise (more representative of microscopy data)
             if self.background_noise > 0:
                 # Use gamma distribution for more realistic microscopy noise
-                # (slightly skewed with longer tail than normal distribution)
                 shape = 2.0  # Shape parameter for gamma distribution
                 scale = self.background_noise / 2.0  # Scale parameter
                 
@@ -467,7 +462,6 @@ class NanoparticleSimulator3D:
                 frame += noise
                 
                 # Add slight spatial correlation to simulate optical system noise
-                # This makes the noise pattern more natural than pure random noise
                 if np.random.random() < 0.7:  # Only apply to some frames for variety
                     frame = gaussian_filter(frame, sigma=0.5)
             
@@ -478,22 +472,37 @@ class NanoparticleSimulator3D:
                 y_pixels = self.positions[i, 1] / self.pixel_size
                 z = self.positions[i, 2]  # Keep z in meters
                 
-                # Calculate final brightness for this particle
-                final_brightness = self._apply_brightness_calculations(i, z)
+                # Calculate physical brightness and attenuation
+                physical_brightness = self.raw_brightnesses[i]
+                focal_attenuation = self._calculate_focal_attenuation(z)
+                final_physical_intensity = physical_brightness * focal_attenuation
+                
+                # Convert to display value
+                final_brightness = self._convert_to_display_value(final_physical_intensity)
+                
+                # Add position to track with both physical and display values
+                self.add_position_to_track(
+                    particle_index=i,
+                    frame=frame_num,
+                    position=(self.positions[i, 0], self.positions[i, 1], self.positions[i, 2]),
+                    brightness=final_brightness,
+                    raw_brightness=final_physical_intensity,
+                    focal_attenuation=focal_attenuation
+                )
                 
                 # Skip rendering if brightness is too low
                 if final_brightness < 0.0005:
                     continue
                 
                 # Calculate Gaussian sigma based on particle size and z-distance
-                base_sigma = self.gaussian_sigma * (self.particle_radii[i] / self.mean_particle_radius) + self.epsilon_radius
+                base_sigma = self.gaussian_sigma * (self.particle_radii[i] / self.mean_particle_radius)
                 
                 # Calculate z-dependent blur using characteristic length
                 z_distance = abs(z - self.focal_plane)
                 normalized_distance = z_distance / self.characteristic_length
                 
                 # Blur increases linearly with normalized distance, capped at maximum
-                defocus_factor = 1 + min(3, normalized_distance) + self.epsilon_radius
+                defocus_factor = 1 + min(3, normalized_distance)
                 
                 sigma = base_sigma * defocus_factor
                 
@@ -501,7 +510,6 @@ class NanoparticleSimulator3D:
                 xi, yi = int(round(x_pixels)), int(round(y_pixels))
                 
                 # Define the region around the particle to draw
-                # Larger sigma means we need a larger window
                 window_size = int(6 * sigma) + 1
                 
                 # Create bounds for the drawing window
@@ -847,6 +855,20 @@ class NanoparticleSimulator3D:
         plt.close()
         
         print(f"Saved depth vs. brightness plot to {output_path}")
+
+    def add_position_to_track(self, particle_index: int, frame: int, position: Tuple[float, float, float],
+                             brightness: float, raw_brightness: float, focal_attenuation: float):
+        """Add a position to a particle's track."""
+        self.tracks[particle_index].add_position(
+            frame=frame,
+            position=position,
+            size=self.particle_radii[particle_index],
+            brightness=brightness,
+            raw_brightness=raw_brightness,
+            snr=brightness / self.background_noise if self.background_noise > 0 else float('inf'),
+            brightness_uncertainty=np.sqrt(brightness) * 0.1,  # Example uncertainty calculation
+            focal_attenuation=focal_attenuation
+        )
 
 
 def main():
