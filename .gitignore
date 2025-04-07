@@ -46,4 +46,6 @@ Thumbs.db
 
 # Keep sample data
 !simulation/results/tracked_sequence_50p/tracked_sequence_50p.gif
-!simulation/results/iteration_3/simulation_v3.gif 
+!simulation/results/iteration_3/simulation_v3.gif
+
+venv/ 
