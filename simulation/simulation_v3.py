@@ -213,9 +213,8 @@ class NanoparticleSimulator3D:
         self.epsilon_brightness = 1e-10  # For brightness calculation
         self.epsilon_radius = 1e-9      # For radius calculation
         
-        # Calculate brightness values
+        # Calculate raw physical brightnesses
         self.raw_brightnesses = self._calculate_raw_brightnesses()
-        self.brightnesses = self._normalize_brightnesses(self.raw_brightnesses)
         
         # Initialize particle positions (3D)
         self.positions = self._initialize_positions()
@@ -247,29 +246,47 @@ class NanoparticleSimulator3D:
     def _calculate_raw_brightnesses(self) -> np.ndarray:
         """Calculate raw brightness values based on Rayleigh scattering."""
         # Rayleigh scattering intensity proportional to r⁶/λ⁴
-        raw_brightnesses = (self.particle_radii ** 6) / (self.wavelength ** 4) + self.epsilon_brightness
-        
-        # Normalize to [0,1] range
-        return raw_brightnesses / raw_brightnesses.max()
+        # Returns intensity in physical units (W/m²)
+        k = 1.0  # Scattering coefficient - could be made more precise
+        raw_brightnesses = k * (self.particle_radii ** 6) / (self.wavelength ** 4)
+        return raw_brightnesses
     
-    def _normalize_brightnesses(self, raw_brightnesses: np.ndarray) -> np.ndarray:
+    def _convert_to_display_value(self, physical_intensity: float) -> float:
         """
-        Normalize the brightness values to the range [0, 1].
+        Convert physical intensity to display value (0-1 range).
+        Models a realistic camera response.
         
         Args:
-            raw_brightnesses: Array of raw brightness values.
+            physical_intensity: Light intensity in W/m²
             
         Returns:
-            Array of normalized brightness values.
+            Display value between 0 and 1
         """
-        if raw_brightnesses.max() == raw_brightnesses.min():
-            return np.ones_like(raw_brightnesses)
+        # Model camera response (example parameters)
+        saturation_intensity = 1e-3  # W/m² at which camera saturates
+        dark_noise = 1e-9           # W/m² minimum detectable intensity
+        gamma = 0.5                 # Camera gamma correction
         
-        # Linear normalization
-        normalized = (raw_brightnesses - raw_brightnesses.min()) / (raw_brightnesses.max() - raw_brightnesses.min())
+        # Apply camera response curve
+        normalized = np.clip((physical_intensity - dark_noise) / (saturation_intensity - dark_noise), 0, 1)
+        display_value = normalized ** gamma
         
-        # Apply brightness factor
-        return normalized * self.brightness_factor
+        # Apply user brightness adjustment
+        return np.clip(display_value * self.brightness_factor, 0, 1)
+    
+    def _apply_brightness_calculations(self, particle_index: int, z_position: float) -> float:
+        """Apply complete brightness calculation for a single particle."""
+        # Get raw physical brightness
+        physical_brightness = self.raw_brightnesses[particle_index]
+        
+        # Calculate attenuation from focal plane distance
+        focal_attenuation = self._calculate_focal_attenuation(z_position)
+        
+        # Calculate final physical intensity
+        final_physical_intensity = physical_brightness * focal_attenuation
+        
+        # Convert to display value only at the end
+        return self._convert_to_display_value(final_physical_intensity)
     
     def _initialize_positions(self) -> np.ndarray:
         """
@@ -372,31 +389,6 @@ class NanoparticleSimulator3D:
         
         # Ensure minimum visibility threshold
         return max(0.05, attenuation)
-    
-    def _apply_brightness_calculations(self, particle_index: int, z_position: float) -> float:
-        """
-        Apply complete brightness calculation for a single particle.
-        
-        The final brightness is calculated as:
-        brightness = base_brightness * focal_attenuation
-        
-        Args:
-            particle_index: Index of the particle.
-            z_position: Z position of the particle in meters.
-            
-        Returns:
-            Final calculated brightness value.
-        """
-        # Get base brightness (from particle volume)
-        base_brightness = self.brightnesses[particle_index]
-        
-        # Calculate attenuation from focal plane distance
-        focal_attenuation = self._calculate_focal_attenuation(z_position)
-        
-        # Combine base brightness and attenuation
-        final_brightness = base_brightness * focal_attenuation
-        
-        return final_brightness
     
     def _move_particles(self) -> None:
         """
