@@ -9,8 +9,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-venv/
-ENV/
 build/
 develop-eggs/
 dist/
@@ -48,9 +46,4 @@ Thumbs.db
 
 # Keep sample data
 !simulation/results/tracked_sequence_50p/tracked_sequence_50p.gif
-!simulation/results/iteration_3/simulation_v3.gif
-
-# Simulation results
-simulation/results/**/*.gif
-simulation/results/**/*.tif
-simulation/results/**/ 
+!simulation/results/iteration_3/simulation_v3.gif 
