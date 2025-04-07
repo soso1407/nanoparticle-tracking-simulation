@@ -1,4 +1,10 @@
 """
+UPDATED VERSION WITH NEW EQUATIONS:
+- Added proper sigma calculation based on wavelength and NA
+- Added density parameters for particles and medium
+- Updated brightness equations with epsilon values
+- Removed DOF parameter in favor of physically-based blur
+
 Nanoparticle Brownian Motion Simulation (Version 3)
 
 Enhanced features in version 3:
