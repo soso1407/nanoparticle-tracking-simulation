@@ -284,6 +284,24 @@ class NanoparticleSimulator3D:
         # Convert to display value only at the end
         return self._convert_to_display_value(final_physical_intensity)
     
+    def _calculate_diffusion_coefficient(self, r: float) -> float:
+        """
+        Calculate the diffusion coefficient for a particle.
+        
+        Args:
+            r: The radius of the particle in meters.
+            
+        Returns:
+            The diffusion coefficient in m²/s.
+        """
+        # Boltzmann constant
+        k_B = 1.380649e-23  # J/K
+        
+        # Stokes-Einstein equation
+        D = k_B * self.temperature / (6 * np.pi * self.viscosity * r)
+        
+        return D
+    
     def _initialize_positions(self) -> np.ndarray:
         """
         Initialize the positions of all particles in 3D space.
@@ -381,7 +399,7 @@ class NanoparticleSimulator3D:
         
         # Calculate attenuation using asymmetric Lorentzian
         attenuation = 1.0 / (1.0 + normalized_distance**2 + 
-                            self.asymmetry_factor * abs(normalized_distance)) + self.epsilon_brightness
+                            self.asymmetry_factor * abs(normalized_distance))
         
         # Ensure minimum visibility threshold
         return max(0.05, attenuation)
@@ -756,7 +774,8 @@ class NanoparticleSimulator3D:
         z_microns = self.positions[:, 2] * 1e6  # Convert to microns
         
         # Get colormap for brightness visualization
-        colors = plt.cm.viridis(self.brightnesses)
+        normalized_brightnesses = self.raw_brightnesses / np.max(self.raw_brightnesses)
+        colors = plt.cm.viridis(normalized_brightnesses)
         
         # Get attenuation for each particle
         attenuations = np.array([self._calculate_focal_attenuation(z) for z in self.positions[:, 2]])
@@ -773,7 +792,7 @@ class NanoparticleSimulator3D:
             x_microns[visible_indices], 
             y_microns[visible_indices], 
             z_microns[visible_indices],
-            c=self.brightnesses[visible_indices],
+            c=normalized_brightnesses[visible_indices],
             s=sizes[visible_indices],
             alpha=attenuations[visible_indices],
             cmap='viridis'
