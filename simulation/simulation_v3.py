@@ -26,9 +26,6 @@ from tif_converter import save_frames_as_tif
 from scipy.ndimage import gaussian_filter
 from mpl_toolkits.mplot3d import Axes3D
 import time
-import imageio
-import tifffile
-import datetime
 
 
 class ParticleTrack3D:
@@ -168,8 +165,7 @@ class NanoparticleSimulator3D:
                  noise_floor: float = 50.0,
                  noise_ceiling: float = 2500.0,
                  add_camera_noise: bool = True,
-                 iteration: int = 3,
-                 run: int = 1):
+                 iteration: int = 3):
         """Initialize the simulator with physically-based Gaussian sigma."""
         self.temperature = temperature
         self.viscosity = viscosity
@@ -204,7 +200,7 @@ class NanoparticleSimulator3D:
         self.add_camera_noise = add_camera_noise
         
         # Set up the output directory
-        self.output_dir = os.path.join('results', f'iteration_{iteration}', f'run_{run}')
+        self.output_dir = os.path.join('results', f'iteration_{iteration}')
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Generate particle radii
@@ -247,7 +243,7 @@ class NanoparticleSimulator3D:
         """Calculate raw brightness values based on Rayleigh scattering."""
         # Rayleigh scattering intensity proportional to r⁶/λ⁴
         # Returns intensity in physical units (W/m²)
-        k = 1e5  # Increased scattering coefficient for better visibility while maintaining physics
+        k = 1.0  # Scattering coefficient - could be made more precise
         raw_brightnesses = k * (self.particle_radii ** 6) / (self.wavelength ** 4)
         return raw_brightnesses
     
@@ -263,70 +259,190 @@ class NanoparticleSimulator3D:
             Display value between 0 and 1
         """
         # Model camera response (example parameters)
-        saturation_intensity = 1e-3  # Saturation threshold
-        dark_noise = 1e-9          # Dark noise floor
-        gamma = 0.7                 # Less aggressive gamma for more natural falloff
+        saturation_intensity = 1e-3  # W/m² at which camera saturates
+        dark_noise = 1e-9           # W/m² minimum detectable intensity
+        gamma = 0.5                 # Camera gamma correction
         
-        # Apply camera response curve with minimum value
+        # Apply camera response curve
         normalized = np.clip((physical_intensity - dark_noise) / (saturation_intensity - dark_noise), 0, 1)
         display_value = normalized ** gamma
         
-        # Apply user brightness adjustment with lower minimum brightness
-        return np.clip(display_value * self.brightness_factor + 0.005, 0, 1)  # Lower minimum brightness
+        # Apply user brightness adjustment
+        return np.clip(display_value * self.brightness_factor, 0, 1)
+    
+    def _apply_brightness_calculations(self, particle_index: int, z_position: float) -> float:
+        """Apply complete brightness calculation for a single particle."""
+        # Get raw physical brightness
+        physical_brightness = self.raw_brightnesses[particle_index]
+        
+        # Calculate attenuation from focal plane distance
+        focal_attenuation = self._calculate_focal_attenuation(z_position)
+        
+        # Calculate final physical intensity
+        final_physical_intensity = physical_brightness * focal_attenuation
+        
+        # Convert to display value only at the end
+        return self._convert_to_display_value(final_physical_intensity)
+    
+    def _calculate_diffusion_coefficient(self, r: float) -> float:
+        """
+        Calculate the diffusion coefficient for a particle.
+        
+        Args:
+            r: The radius of the particle in meters.
+            
+        Returns:
+            The diffusion coefficient in m²/s.
+        """
+        # Boltzmann constant
+        k_B = 1.380649e-23  # J/K
+        
+        # Stokes-Einstein equation
+        D = k_B * self.temperature / (6 * np.pi * self.viscosity * r)
+        
+        return D
+    
+    def _initialize_positions(self) -> np.ndarray:
+        """
+        Initialize the positions of all particles in 3D space.
+        
+        Modified to create a more balanced distribution of particles across
+        the z-range, ensuring particles appear at all distances from the focal plane.
+        Physical positions are stored in meters, but x,y are converted from pixels.
+        
+        Returns:
+            Array of particle positions (num_particles, 3) in meters.
+        """
+        # Initialize positions array (in meters)
+        positions = np.zeros((self.num_particles, 3))
+        
+        # x, y positions in meters - uniform distribution across frame
+        # Convert frame size from pixels to meters
+        frame_width_meters = self.frame_size[0] * self.pixel_size
+        frame_height_meters = self.frame_size[1] * self.pixel_size
+        
+        positions[:, 0] = np.random.uniform(0, frame_width_meters, self.num_particles)
+        positions[:, 1] = np.random.uniform(0, frame_height_meters, self.num_particles)
+        
+        # For z-positions, create a stratified distribution to ensure coverage at all distances
+        z_min, z_max = self.z_range
+        z_range_length = z_max - z_min
+        
+        # Handle edge case: very few particles
+        if self.num_particles < 10:
+            # For small number of particles, just distribute them evenly
+            if self.num_particles == 1:
+                z_positions = np.array([self.focal_plane])  # Single particle at focal plane
+            else:
+                # Distribute evenly across z-range
+                z_positions = np.linspace(z_min, z_max, self.num_particles)
+                # Add small random offsets
+                z_positions += np.random.normal(0, z_range_length * 0.05, self.num_particles)
+                # Ensure we stay within bounds
+                z_positions = np.clip(z_positions, z_min, z_max)
+        else:
+            # Divide the z-range into multiple segments
+            num_strata = min(10, max(2, self.num_particles // 10))  # At least 2 strata
+            strata_size = z_range_length / num_strata
+            
+            # Initialize z-positions array
+            z_positions = np.zeros(self.num_particles)
+            
+            # Calculate number of particles per stratum
+            particles_per_stratum = np.ones(num_strata, dtype=int) * (self.num_particles // num_strata)
+            
+            # Add remaining particles to random strata
+            remainder = self.num_particles % num_strata
+            if remainder > 0:
+                random_strata = np.random.choice(num_strata, remainder, replace=False)
+                particles_per_stratum[random_strata] += 1
+                
+            # Generate z-positions for each stratum
+            particle_index = 0
+            for i in range(num_strata):
+                stratum_start = z_min + i * strata_size
+                stratum_end = stratum_start + strata_size
+                
+                # Place particles in this stratum with small random offsets
+                num_in_stratum = particles_per_stratum[i]
+                
+                # Create a mixture of uniform and beta distribution for more natural look
+                if np.random.random() < 0.7:  # 70% using uniform
+                    stratum_positions = np.random.uniform(
+                        stratum_start, stratum_end, num_in_stratum
+                    )
+                else:  # 30% using beta distribution for some clustering
+                    # Create a slightly skewed distribution within the stratum
+                    alpha, beta = np.random.uniform(1, 3, 2)
+                    random_values = np.random.beta(alpha, beta, num_in_stratum)
+                    stratum_positions = stratum_start + random_values * strata_size
+                
+                # Assign positions to the main array
+                z_positions[particle_index:particle_index+num_in_stratum] = stratum_positions
+                particle_index += num_in_stratum
+            
+            # Shuffle to avoid any ordering artifacts
+            np.random.shuffle(z_positions)
+        
+        # Assign z-positions
+        positions[:, 2] = z_positions
+        
+        return positions
     
     def _calculate_focal_attenuation(self, z_position: float) -> float:
-        """Calculate brightness attenuation based on distance from focal plane."""
+        """Calculate brightness attenuation with numerical stability."""
         # Calculate distance from focal plane
         distance = z_position - self.focal_plane
         
         # Normalized distance (relative to characteristic length)
         normalized_distance = distance / self.characteristic_length
         
-        # Calculate attenuation using modified asymmetric Lorentzian with very strong falloff
-        attenuation = 1.0 / (1.0 + normalized_distance**2 +  # Stronger quadratic term
-                            self.asymmetry_factor * abs(normalized_distance))  # Linear term for asymmetry
+        # Calculate attenuation using asymmetric Lorentzian
+        attenuation = 1.0 / (1.0 + normalized_distance**2 + 
+                            self.asymmetry_factor * abs(normalized_distance))
         
-        # Very low minimum visibility for dramatic changes
-        return max(0.05, attenuation)  # More dramatic attenuation range
+        # Ensure minimum visibility threshold
+        return max(0.05, attenuation)
     
     def _move_particles(self) -> None:
-        """Move all particles according to Brownian motion in 3D."""
-        # Calculate individual diffusion coefficients for each particle
-        diffusion_coefficients = np.array([
-            self._calculate_diffusion_coefficient(r) for r in self.particle_radii
-        ])
+        """
+        Move all particles according to Brownian motion in 3D.
+        All positions and calculations are in meters.
+        """
+        # Calculate the step size for each particle based on diffusion coefficient
+        # Standard deviation of the displacement is sqrt(2 * D * dt) in each dimension
+        std_devs = np.sqrt(2 * self._calculate_diffusion_coefficient(self.mean_particle_radius) * self.diffusion_time)
         
-        # Calculate step sizes for each particle
-        std_devs = np.sqrt(2 * diffusion_coefficients * self.diffusion_time)
-        
-        # Generate random displacements in all three dimensions
+        # Generate random displacements in all three dimensions (in meters)
         displacements = np.zeros((self.num_particles, 3))
         for i in range(3):  # x, y, z dimensions
-            # Add slight bias towards focal plane in z direction for better visibility
-            if i == 2:  # z-dimension
-                bias = (self.focal_plane - self.positions[:, 2]) * 0.01
-                displacements[:, i] = np.random.normal(bias, std_devs)
-            else:
-                displacements[:, i] = np.random.normal(0, std_devs)
+            displacements[:, i] = np.random.normal(0, std_devs)
         
         # Update positions
         self.positions += displacements
         
-        # Keep particles within boundaries with smoother wrapping
+        # Keep particles within frame boundaries (x and y in meters)
         frame_width_meters = self.frame_size[0] * self.pixel_size
         frame_height_meters = self.frame_size[1] * self.pixel_size
         
-        # Periodic boundary conditions for x and y
-        self.positions[:, 0] = self.positions[:, 0] % frame_width_meters
-        self.positions[:, 1] = self.positions[:, 1] % frame_height_meters
-        
-        # Soft reflection at z boundaries
-        z_min, z_max = self.z_range
         for i in range(self.num_particles):
-            if self.positions[i, 2] < z_min:
-                self.positions[i, 2] = z_min + abs(self.positions[i, 2] - z_min) * 0.5
-            elif self.positions[i, 2] > z_max:
-                self.positions[i, 2] = z_max - abs(self.positions[i, 2] - z_max) * 0.5
+            # x boundary (horizontal)
+            if self.positions[i, 0] < 0:
+                self.positions[i, 0] = abs(self.positions[i, 0])
+            elif self.positions[i, 0] >= frame_width_meters:
+                self.positions[i, 0] = 2 * frame_width_meters - self.positions[i, 0]
+            
+            # y boundary (vertical)
+            if self.positions[i, 1] < 0:
+                self.positions[i, 1] = abs(self.positions[i, 1])
+            elif self.positions[i, 1] >= frame_height_meters:
+                self.positions[i, 1] = 2 * frame_height_meters - self.positions[i, 1]
+            
+            # z boundary (depth)
+            if self.positions[i, 2] < self.z_range[0]:
+                self.positions[i, 2] = 2 * self.z_range[0] - self.positions[i, 2]
+            elif self.positions[i, 2] >= self.z_range[1]:
+                self.positions[i, 2] = 2 * self.z_range[1] - self.positions[i, 2]
     
     def run_simulation(self, num_frames: int = 100) -> List[Image.Image]:
         """Run the simulation with continuous z-dependent blur."""
@@ -348,8 +464,24 @@ class NanoparticleSimulator3D:
                     print(f"  Progress: {frame_num/num_frames*100:.1f}% complete")
                     print(f"  Estimated remaining time: {remaining_time:.1f} seconds")
             
-            # Create a black frame
-            frame = np.zeros(self.frame_size, dtype=np.float32)
+            # Create a blank frame with baseline noise
+            frame = np.ones(self.frame_size, dtype=np.float32) * self.noise_floor
+            
+            # Add realistic background noise (more representative of microscopy data)
+            if self.background_noise > 0:
+                # Use gamma distribution for more realistic microscopy noise
+                shape = 2.0  # Shape parameter for gamma distribution
+                scale = self.background_noise / 2.0  # Scale parameter
+                
+                # Generate gamma-distributed noise
+                noise = np.random.gamma(shape=shape, scale=scale, size=self.frame_size)
+                
+                # Add the noise to the frame
+                frame += noise
+                
+                # Add slight spatial correlation to simulate optical system noise
+                if np.random.random() < 0.7:  # Only apply to some frames for variety
+                    frame = gaussian_filter(frame, sigma=0.5)
             
             # Draw particles with z-dependent brightness
             for i in range(self.num_particles):
@@ -377,25 +509,26 @@ class NanoparticleSimulator3D:
                 )
                 
                 # Skip rendering if brightness is too low
-                if final_brightness < 0.0001:
+                if final_brightness < 0.0005:
                     continue
                 
                 # Calculate Gaussian sigma based on particle size and z-distance
-                base_sigma = self.gaussian_sigma * (self.particle_radii[i] / self.mean_particle_radius) * 0.5  # Scale with particle size but keep smaller visual appearance
+                base_sigma = self.gaussian_sigma * (self.particle_radii[i] / self.mean_particle_radius)
                 
                 # Calculate z-dependent blur using characteristic length
                 z_distance = abs(z - self.focal_plane)
                 normalized_distance = z_distance / self.characteristic_length
                 
                 # Blur increases linearly with normalized distance, capped at maximum
-                defocus_factor = 1 + min(1.0, normalized_distance)  # Reduced maximum blur and defocus effect
+                defocus_factor = 1 + min(3, normalized_distance)
+                
                 sigma = base_sigma * defocus_factor
                 
                 # Convert position to integer coordinates
                 xi, yi = int(round(x_pixels)), int(round(y_pixels))
                 
                 # Define the region around the particle to draw
-                window_size = int(3 * sigma) + 1  # Smaller window size for tighter rendering
+                window_size = int(6 * sigma) + 1
                 
                 # Create bounds for the drawing window
                 x_min = max(0, xi - window_size // 2)
@@ -413,9 +546,9 @@ class NanoparticleSimulator3D:
                     np.arange(y_min, y_max)
                 )
                 
-                # Calculate the Gaussian values with tighter spread
+                # Calculate the Gaussian values
                 gaussian = final_brightness * np.exp(
-                    -((x_coords - x_pixels)**2 + (y_coords - y_pixels)**2) / (sigma**2)  # Tighter Gaussian spread
+                    -((x_coords - x_pixels)**2 + (y_coords - y_pixels)**2) / (2 * sigma**2)
                 )
                 
                 # Add the Gaussian to the frame
@@ -424,35 +557,18 @@ class NanoparticleSimulator3D:
             # Move particles for the next frame
             self._move_particles()
             
+            # Ensure values are in the expected range
+            frame = np.clip(frame, 0, 1.0)
+            
             # Record pixel value statistics for the first frame
             if frame_num == 0:
                 self._calculate_pixel_statistics(frame)
             
-            # Apply very aggressive contrast enhancement
-            p0, p100 = np.percentile(frame, (0.01, 99.99))
-            frame_rescaled = np.clip((frame - p0) / (p100 - p0), 0, 1)
-            
-            # Apply gamma correction to enhance dim features
-            gamma = 0.6  # Less aggressive gamma for better brightness differentiation
-            frame_gamma = np.power(frame_rescaled, gamma)
-            
-            # Apply histogram equalization with clipping for better contrast
-            hist, bins = np.histogram(frame_gamma.flatten(), bins=256, range=(0, 1))
-            cdf = hist.cumsum()
-            cdf = (cdf - cdf.min()) / (cdf.max() - cdf.min())
-            frame_eq = np.interp(frame_gamma.flatten(), bins[:-1], cdf).reshape(frame_gamma.shape)
-            
-            # Convert to 8-bit with enhanced contrast
-            frame_8bit = (frame_eq * 255).astype(np.uint8)
+            # Convert to 8-bit for GIF
+            frame_8bit = (frame * 255).astype(np.uint8)
             
             # Convert to PIL Image
-            pil_frame = Image.fromarray(frame_8bit, mode='L')
-            
-            # Print value range for the first frame
-            if frame_num == 0:
-                print(f"Frame value range: {frame_8bit.min()}-{frame_8bit.max()}")
-                print(f"Percentiles: 0.01%={p0:.6f}, 99.99%={p100:.6f}")
-            
+            pil_frame = Image.fromarray(frame_8bit)
             frames.append(pil_frame)
         
         # Print final statistics
@@ -773,325 +889,63 @@ class NanoparticleSimulator3D:
             focal_attenuation=focal_attenuation
         )
 
-    def _initialize_positions(self) -> np.ndarray:
-        """
-        Initialize the positions of all particles in 3D space.
-        
-        Modified to create a more balanced distribution of particles across
-        the z-range, ensuring particles appear at all distances from the focal plane.
-        Physical positions are stored in meters, but x,y are converted from pixels.
-        
-        Returns:
-            Array of particle positions (num_particles, 3) in meters.
-        """
-        # Initialize positions array (in meters)
-        positions = np.zeros((self.num_particles, 3))
-        
-        # x, y positions in meters - uniform distribution across frame
-        # Convert frame size from pixels to meters
-        frame_width_meters = self.frame_size[0] * self.pixel_size
-        frame_height_meters = self.frame_size[1] * self.pixel_size
-        
-        positions[:, 0] = np.random.uniform(0, frame_width_meters, self.num_particles)
-        positions[:, 1] = np.random.uniform(0, frame_height_meters, self.num_particles)
-        
-        # For z-positions, create a stratified distribution to ensure coverage at all distances
-        z_min, z_max = self.z_range
-        z_range_length = z_max - z_min
-        
-        # Handle edge case: very few particles
-        if self.num_particles < 10:
-            # For small number of particles, just distribute them evenly
-            if self.num_particles == 1:
-                z_positions = np.array([self.focal_plane])  # Single particle at focal plane
-            else:
-                # Distribute evenly across z-range
-                z_positions = np.linspace(z_min, z_max, self.num_particles)
-                # Add small random offsets
-                z_positions += np.random.normal(0, z_range_length * 0.05, self.num_particles)
-                # Ensure we stay within bounds
-                z_positions = np.clip(z_positions, z_min, z_max)
-        else:
-            # Divide the z-range into multiple segments
-            num_strata = min(10, max(2, self.num_particles // 10))  # At least 2 strata
-            strata_size = z_range_length / num_strata
-            
-            # Initialize z-positions array
-            z_positions = np.zeros(self.num_particles)
-            
-            # Calculate number of particles per stratum
-            particles_per_stratum = np.ones(num_strata, dtype=int) * (self.num_particles // num_strata)
-            
-            # Add remaining particles to random strata
-            remainder = self.num_particles % num_strata
-            if remainder > 0:
-                random_strata = np.random.choice(num_strata, remainder, replace=False)
-                particles_per_stratum[random_strata] += 1
-                
-            # Generate z-positions for each stratum
-            particle_index = 0
-            for i in range(num_strata):
-                stratum_start = z_min + i * strata_size
-                stratum_end = stratum_start + strata_size
-                
-                # Place particles in this stratum with small random offsets
-                num_in_stratum = particles_per_stratum[i]
-                
-                # Create a mixture of uniform and beta distribution for more natural look
-                if np.random.random() < 0.7:  # 70% using uniform
-                    stratum_positions = np.random.uniform(
-                        stratum_start, stratum_end, num_in_stratum
-                    )
-                else:  # 30% using beta distribution for some clustering
-                    # Create a slightly skewed distribution within the stratum
-                    alpha, beta = np.random.uniform(1, 3, 2)
-                    random_values = np.random.beta(alpha, beta, num_in_stratum)
-                    stratum_positions = stratum_start + random_values * strata_size
-                
-                # Assign positions to the main array
-                z_positions[particle_index:particle_index+num_in_stratum] = stratum_positions
-                particle_index += num_in_stratum
-            
-            # Shuffle to avoid any ordering artifacts
-            np.random.shuffle(z_positions)
-        
-        # Assign z-positions
-        positions[:, 2] = z_positions
-        
-        return positions
 
-    def _calculate_diffusion_coefficient(self, r: float) -> float:
-        """
-        Calculate the diffusion coefficient for a particle.
-        
-        Args:
-            r: The radius of the particle in meters.
-            
-        Returns:
-            The diffusion coefficient in m²/s.
-        """
-        # Boltzmann constant
-        k_B = 1.380649e-23  # J/K
-        
-        # Stokes-Einstein equation
-        D = k_B * self.temperature / (6 * np.pi * self.viscosity * r)
-        
-        return D
-
-
-def get_next_run():
-    """Get the next available run number in the current iteration directory."""
-    base_dir = "results"
-    if not os.path.exists(base_dir):
-        os.makedirs(base_dir)
-    
-    # Get the current iteration
-    iteration_dirs = [d for d in os.listdir(base_dir) if d.startswith("iteration_")]
-    numeric_iterations = []
-    for d in iteration_dirs:
-        try:
-            num = int(d.split("_")[1])
-            numeric_iterations.append(num)
-        except (IndexError, ValueError):
-            continue
-    
-    if not numeric_iterations:
-        current_iteration = 1
-    else:
-        current_iteration = max(numeric_iterations)
-    
-    iteration_dir = os.path.join(base_dir, f"iteration_{current_iteration}")
-    if not os.path.exists(iteration_dir):
-        os.makedirs(iteration_dir)
-    
-    # Get the next run number
-    run_dirs = [d for d in os.listdir(iteration_dir) if d.startswith("run_")]
-    numeric_runs = []
-    for d in run_dirs:
-        try:
-            num = int(d.split("_")[1])
-            numeric_runs.append(num)
-        except (IndexError, ValueError):
-            continue
-    
-    if not numeric_runs:
-        next_run = 1
-    else:
-        next_run = max(numeric_runs) + 1
-    
-    # Create the run directory
-    run_dir = os.path.join(iteration_dir, f"run_{next_run}")
-    os.makedirs(run_dir)
-    
-    return run_dir
+def get_next_iteration():
+    """Find the next available iteration number."""
+    base_dir = 'results'
+    i = 1
+    while os.path.exists(os.path.join(base_dir, f'iteration_{i}')):
+        i += 1
+    return i
 
 def main():
-    """Main function to run the simulation."""
-    # Set up run directory
-    run_dir = get_next_run()
-    print(f"Starting simulation run {run_dir} in iteration {run_dir.split('_')[-2]}...")
+    """Run the main simulation."""
+    # Get next iteration number
+    iteration = get_next_iteration()
+    print(f"Starting simulation iteration {iteration}...")
     
-    # Set up simulation parameters
-    frame_size = (512, 512)  # pixels
-    pixel_size = 100e-9  # 100 nm per pixel
-    wavelength = 550e-9  # 550 nm (green light)
-    numerical_aperture = 1.4  # High NA for good resolution
-    temperature = 310.15  # 37°C = 310.15 K
-    viscosity = 0.0007  # Water viscosity at 37°C in Pa·s
-    
-    # Particle parameters
-    mean_particle_radius = 50e-9  # 50 nm mean radius - much smaller particles
-    std_particle_radius = 10e-9   # 10 nm standard deviation
-    num_particles = 100  # Keep 100 particles
-    
-    # Imaging parameters
-    diffusion_time = 0.033  # 30 fps
-    brightness_factor = 8000.0  # Increased brightness factor
-    background_noise = 0.0  # No background noise
-    noise_floor = 0.0
-    noise_ceiling = 1.0
-    characteristic_length = 0.25e-6  # 0.25 µm characteristic length - much stronger z-dependence
-    z_range = (-2e-6, 2e-6)  # ±2 µm z-range
-    focal_plane = 0  # focal plane at z=0
-    asymmetry_factor = 1.2  # Increased asymmetry for even stronger 3D effect
-
-    # Create simulator instance
-    sim = NanoparticleSimulator3D(
-        frame_size=frame_size,
-        pixel_size=pixel_size,
-        wavelength=wavelength,
-        numerical_aperture=numerical_aperture,
-        temperature=temperature,
-        viscosity=viscosity,
-        mean_particle_radius=mean_particle_radius,
-        std_particle_radius=std_particle_radius,
-        num_particles=num_particles,
-        diffusion_time=diffusion_time,
-        brightness_factor=brightness_factor,
-        background_noise=background_noise,
-        noise_floor=noise_floor,
-        noise_ceiling=noise_ceiling,
-        characteristic_length=characteristic_length,
-        z_range=z_range,
-        focal_plane=focal_plane,
-        asymmetry_factor=asymmetry_factor
+    # Create simulator with default parameters
+    simulator = NanoparticleSimulator3D(
+        temperature=298.15,            # Room temperature (25°C)
+        viscosity=8.9e-4,             # Water viscosity
+        mean_particle_radius=50e-9,    # 50 nm radius (~100 nm diameter)
+        std_particle_radius=10e-9,     # 10 nm std dev (~20 nm for diameter)
+        frame_size=(512, 512),         # Frame size
+        pixel_size=100e-9,             # Pixel size (100 nm)
+        z_range=(-10e-6, 10e-6),       # -10 to 10 micrometers in z
+        focal_plane=0.0,               # Focal plane at z=0
+        diffusion_time=0.1,            # Time between frames
+        num_particles=100,             # Number of particles
+        wavelength=550e-9,             # Default 550nm (green light)
+        numerical_aperture=1.4,        # Added NA parameter
+        brightness_factor=1.0,         # Brightness scaling factor
+        asymmetry_factor=0.1,          # Slight asymmetry in z-attenuation
+        characteristic_length=None,   # Will be set based on wavelength
+        particle_density=1.05e3,        # Default: polystyrene density in kg/m³
+        medium_density=1.00e3,         # Default: water density in kg/m³
+        background_noise=0.12,         # Increased background noise for realism
+        noise_floor=50.0,              # Baseline noise floor (in 16-bit scale)
+        noise_ceiling=2500.0,          # Maximum expected pixel value (in 16-bit scale)
+        add_camera_noise=True,         # Add realistic camera noise
+        iteration=iteration           # Use dynamic iteration number
     )
     
-    # Save size distribution plot
-    plt.figure(figsize=(10, 6))
-    plt.hist(sim.particle_radii * 1e9, bins=20)
-    plt.xlabel('Particle Radius (nm)')
-    plt.ylabel('Count')
-    plt.title('Particle Size Distribution')
-    plt.savefig(os.path.join(run_dir, 'size_distribution.png'))
-    plt.close()
+    # Plot size distribution
+    simulator.plot_size_distribution()
     
-    # Run simulation
+    # Run simulation for 100 frames
     print("Generating 3D simulation with focal plane effects...")
-    frames = sim.run_simulation(100)  # Generate 100 frames
+    frames = simulator.run_simulation(num_frames=100)
     
-    # Save outputs
-    imageio.mimsave(os.path.join(run_dir, 'simulation_v3.gif'), frames)
-    tifffile.imwrite(os.path.join(run_dir, 'simulation_v3.tif'), np.stack(frames))
+    # Save the simulation
+    simulator.save_simulation(frames)
     
-    # Save metadata
-    metadata = {
-        'parameters': {
-            'temperature': sim.temperature,
-            'viscosity': sim.viscosity,
-            'mean_particle_radius': sim.mean_particle_radius,
-            'std_particle_radius': sim.std_particle_radius,
-            'frame_size': sim.frame_size,
-            'pixel_size': sim.pixel_size,
-            'z_range': sim.z_range,
-            'focal_plane': sim.focal_plane,
-            'diffusion_time': sim.diffusion_time,
-            'num_particles': sim.num_particles,
-            'wavelength': sim.wavelength,
-            'numerical_aperture': sim.numerical_aperture,
-            'brightness_factor': sim.brightness_factor,
-            'asymmetry_factor': sim.asymmetry_factor,
-            'characteristic_length': sim.characteristic_length,
-            'particle_density': sim.particle_density,
-            'medium_density': sim.medium_density,
-            'background_noise': sim.background_noise,
-            'noise_floor': sim.noise_floor,
-            'noise_ceiling': sim.noise_ceiling,
-            'add_camera_noise': sim.add_camera_noise
-        },
-        'timestamp': datetime.datetime.now().isoformat()
-    }
-    with open(os.path.join(run_dir, 'simulation_v3_metadata.json'), 'w') as f:
-        json.dump(metadata, f, indent=2, default=str)
-    
-    # Save track data
-    track_data = []
-    for i, track in enumerate(sim.tracks):
-        track_data.append({
-            'particle_id': i,
-            'frames': list(range(len(track.positions))),
-            'positions': track.positions,
-            'brightnesses': track.brightnesses,
-            'raw_brightnesses': track.raw_brightnesses,
-            'attenuations': track.focal_attenuations
-        })
-    
-    # Save as JSON
-    with open(os.path.join(run_dir, 'simulation_v3_tracks.json'), 'w') as f:
-        json.dump(track_data, f, indent=2, default=lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
-    
-    # Convert track data for CSV
-    csv_data = []
-    for track in track_data:
-        for frame_idx, frame in enumerate(track['frames']):
-            csv_data.append({
-                'particle_id': track['particle_id'],
-                'frame': frame,
-                'x': track['positions'][frame_idx][0],
-                'y': track['positions'][frame_idx][1],
-                'z': track['positions'][frame_idx][2],
-                'brightness': track['brightnesses'][frame_idx],
-                'raw_brightness': track['raw_brightnesses'][frame_idx],
-                'attenuation': track['attenuations'][frame_idx]
-            })
-    
-    # Save as CSV
-    df = pd.DataFrame(csv_data)
-    df.to_csv(os.path.join(run_dir, 'simulation_v3_tracks.csv'), index=False)
-    
+    # Plot 3D positions and depth vs. brightness
     print("Generating visualization plots...")
+    simulator.plot_3d_positions()
+    simulator.plot_depth_vs_brightness()
     
-    # Plot 3D positions
-    fig = plt.figure(figsize=(12, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    
-    for track in track_data:
-        positions = np.array(track['positions'])
-        ax.plot(positions[:, 0], positions[:, 1], positions[:, 2], alpha=0.5, label=f'Particle {track["particle_id"]}')
-    
-    ax.set_xlabel('X (µm)')
-    ax.set_ylabel('Y (µm)')
-    ax.set_zlabel('Z (µm)')
-    ax.set_title('3D Particle Trajectories')
-    plt.savefig(os.path.join(run_dir, '3d_positions.png'))
-    plt.close()
-    
-    # Plot depth vs brightness
-    plt.figure(figsize=(10, 6))
-    depths = []
-    brightnesses = []
-    for track in track_data:
-        depths.extend([pos[2] for pos in track['positions']])
-        brightnesses.extend(track['brightnesses'])
-    
-    plt.scatter(depths, brightnesses, alpha=0.5)
-    plt.xlabel('Z-depth (µm)')
-    plt.ylabel('Brightness')
-    plt.title('Particle Brightness vs. Depth')
-    plt.savefig(os.path.join(run_dir, 'depth_vs_brightness.png'))
-    plt.close()
-    
-    print(f"3D simulation complete. Results saved in '{run_dir}' directory.")
+    print("3D simulation complete. Results saved in 'results/iteration_3' directory.")
 
 
 def create_sequence_for_tracking(num_frames=30, num_particles=50, output_prefix="tracked_sequence"):
