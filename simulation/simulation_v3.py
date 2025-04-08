@@ -890,13 +890,25 @@ class NanoparticleSimulator3D:
         )
 
 
+def get_next_iteration():
+    """Find the next available iteration number."""
+    base_dir = 'results'
+    i = 1
+    while os.path.exists(os.path.join(base_dir, f'iteration_{i}')):
+        i += 1
+    return i
+
 def main():
-    """Run the 3D nanoparticle simulation."""
+    """Run the main simulation."""
+    # Get next iteration number
+    iteration = get_next_iteration()
+    print(f"Starting simulation iteration {iteration}...")
+    
     # Create simulator with default parameters
     simulator = NanoparticleSimulator3D(
-        temperature=298.15,            # Room temperature
-        viscosity=1.0e-3,              # Water viscosity
-        mean_particle_radius=50e-9,    # 50 nm radius (100 nm diameter) 
+        temperature=298.15,            # Room temperature (25°C)
+        viscosity=8.9e-4,             # Water viscosity
+        mean_particle_radius=50e-9,    # 50 nm radius (~100 nm diameter)
         std_particle_radius=10e-9,     # 10 nm std dev (~20 nm for diameter)
         frame_size=(512, 512),         # Frame size
         pixel_size=100e-9,             # Pixel size (100 nm)
@@ -915,7 +927,7 @@ def main():
         noise_floor=50.0,              # Baseline noise floor (in 16-bit scale)
         noise_ceiling=2500.0,          # Maximum expected pixel value (in 16-bit scale)
         add_camera_noise=True,         # Add realistic camera noise
-        iteration=3                    # Iteration number for directory
+        iteration=iteration           # Use dynamic iteration number
     )
     
     # Plot size distribution
