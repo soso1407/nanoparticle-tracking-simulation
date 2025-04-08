@@ -165,8 +165,7 @@ class NanoparticleSimulator3D:
                  noise_floor: float = 50.0,
                  noise_ceiling: float = 2500.0,
                  add_camera_noise: bool = True,
-                 iteration: int = 3,
-                 run: int = 1):
+                 iteration: int = 3):
         """Initialize the simulator with physically-based Gaussian sigma."""
         self.temperature = temperature
         self.viscosity = viscosity
@@ -201,7 +200,7 @@ class NanoparticleSimulator3D:
         self.add_camera_noise = add_camera_noise
         
         # Set up the output directory
-        self.output_dir = os.path.join('results', f'iteration_{iteration}', f'run_{run}')
+        self.output_dir = os.path.join('results', f'iteration_{iteration}')
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Generate particle radii
@@ -891,25 +890,13 @@ class NanoparticleSimulator3D:
         )
 
 
-def get_next_run():
-    """Find the next available run number in the current iteration directory."""
-    base_dir = os.path.join('results', 'iteration_3')
-    i = 1
-    while os.path.exists(os.path.join(base_dir, f'run_{i}')):
-        i += 1
-    return i
-
 def main():
-    """Run the main simulation."""
-    # Get next run number
-    run = get_next_run()
-    print(f"Starting simulation run {run} in iteration 3...")
-    
+    """Run the 3D nanoparticle simulation."""
     # Create simulator with default parameters
     simulator = NanoparticleSimulator3D(
-        temperature=298.15,            # Room temperature (25°C)
-        viscosity=8.9e-4,             # Water viscosity
-        mean_particle_radius=50e-9,    # 50 nm radius (~100 nm diameter)
+        temperature=298.15,            # Room temperature
+        viscosity=1.0e-3,              # Water viscosity
+        mean_particle_radius=50e-9,    # 50 nm radius (100 nm diameter) 
         std_particle_radius=10e-9,     # 10 nm std dev (~20 nm for diameter)
         frame_size=(512, 512),         # Frame size
         pixel_size=100e-9,             # Pixel size (100 nm)
@@ -921,15 +908,14 @@ def main():
         numerical_aperture=1.4,        # Added NA parameter
         brightness_factor=1.0,         # Brightness scaling factor
         asymmetry_factor=0.1,          # Slight asymmetry in z-attenuation
-        characteristic_length=None,     # Will be set based on wavelength
-        particle_density=1.05e3,       # Default: polystyrene density in kg/m³
+        characteristic_length=None,   # Will be set based on wavelength
+        particle_density=1.05e3,        # Default: polystyrene density in kg/m³
         medium_density=1.00e3,         # Default: water density in kg/m³
         background_noise=0.12,         # Increased background noise for realism
         noise_floor=50.0,              # Baseline noise floor (in 16-bit scale)
         noise_ceiling=2500.0,          # Maximum expected pixel value (in 16-bit scale)
         add_camera_noise=True,         # Add realistic camera noise
-        iteration=3,                   # Fixed iteration number
-        run=run                        # Dynamic run number
+        iteration=3                    # Iteration number for directory
     )
     
     # Plot size distribution
@@ -947,7 +933,7 @@ def main():
     simulator.plot_3d_positions()
     simulator.plot_depth_vs_brightness()
     
-    print("3D simulation complete. Results saved in 'results/iteration_3/run_1' directory.")
+    print("3D simulation complete. Results saved in 'results/iteration_3' directory.")
 
 
 def create_sequence_for_tracking(num_frames=30, num_particles=50, output_prefix="tracked_sequence"):
