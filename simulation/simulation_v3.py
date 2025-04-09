@@ -310,27 +310,47 @@ class NanoparticleSimulator3D:
                 displacements[:, i] = np.random.normal(0, std_devs)
         
         # Update positions
-        self.positions += displacements
+        new_positions = self.positions + displacements
         
-        # Keep particles within boundaries with smoother wrapping
+        # Calculate boundaries in meters
         frame_width_meters = self.frame_size[0] * self.pixel_size
         frame_height_meters = self.frame_size[1] * self.pixel_size
         
-        # Periodic boundary conditions for x and y
-        self.positions[:, 0] = self.positions[:, 0] % frame_width_meters
-        self.positions[:, 1] = self.positions[:, 1] % frame_height_meters
+        # Handle boundary conditions with reflection
+        # X boundaries
+        x_reflection = new_positions[:, 0] < 0
+        new_positions[x_reflection, 0] = -new_positions[x_reflection, 0]  # Reflect off left wall
         
-        # Soft reflection at z boundaries
+        x_reflection = new_positions[:, 0] > frame_width_meters
+        new_positions[x_reflection, 0] = 2*frame_width_meters - new_positions[x_reflection, 0]  # Reflect off right wall
+        
+        # Y boundaries
+        y_reflection = new_positions[:, 1] < 0
+        new_positions[y_reflection, 1] = -new_positions[y_reflection, 1]  # Reflect off bottom wall
+        
+        y_reflection = new_positions[:, 1] > frame_height_meters
+        new_positions[y_reflection, 1] = 2*frame_height_meters - new_positions[y_reflection, 1]  # Reflect off top wall
+        
+        # Z boundaries with soft reflection (already implemented)
         z_min, z_max = self.z_range
-        for i in range(self.num_particles):
-            if self.positions[i, 2] < z_min:
-                self.positions[i, 2] = z_min + abs(self.positions[i, 2] - z_min) * 0.5
-            elif self.positions[i, 2] > z_max:
-                self.positions[i, 2] = z_max - abs(self.positions[i, 2] - z_max) * 0.5
+        z_reflection = new_positions[:, 2] < z_min
+        new_positions[z_reflection, 2] = z_min + abs(new_positions[z_reflection, 2] - z_min) * 0.5
+        
+        z_reflection = new_positions[:, 2] > z_max
+        new_positions[z_reflection, 2] = z_max - abs(new_positions[z_reflection, 2] - z_max) * 0.5
+        
+        # Update positions
+        self.positions = new_positions
     
-    def run_simulation(self, num_frames: int = 100) -> List[Image.Image]:
-        """Run the simulation with continuous z-dependent blur."""
-        frames = []
+    def run_simulation(self, num_frames: int = 100) -> Tuple[List[Image.Image], np.ndarray]:
+        """
+        Run the simulation with continuous z-dependent blur.
+        
+        Returns:
+            Tuple of (8-bit frames for GIF, 16-bit frames for TIF)
+        """
+        frames = []  # 8-bit frames for GIF
+        frames_16bit = []  # 16-bit frames for TIF
         
         # Start timing
         start_time = time.time()
@@ -381,21 +401,21 @@ class NanoparticleSimulator3D:
                     continue
                 
                 # Calculate Gaussian sigma based on particle size and z-distance
-                base_sigma = self.gaussian_sigma * (self.particle_radii[i] / self.mean_particle_radius) * 0.5  # Scale with particle size but keep smaller visual appearance
+                base_sigma = self.gaussian_sigma * (self.particle_radii[i] / self.mean_particle_radius) * 0.5
                 
                 # Calculate z-dependent blur using characteristic length
                 z_distance = abs(z - self.focal_plane)
                 normalized_distance = z_distance / self.characteristic_length
                 
                 # Blur increases linearly with normalized distance, capped at maximum
-                defocus_factor = 1 + min(1.0, normalized_distance)  # Reduced maximum blur and defocus effect
+                defocus_factor = 1 + min(1.0, normalized_distance)
                 sigma = base_sigma * defocus_factor
                 
                 # Convert position to integer coordinates
                 xi, yi = int(round(x_pixels)), int(round(y_pixels))
                 
                 # Define the region around the particle to draw
-                window_size = int(3 * sigma) + 1  # Smaller window size for tighter rendering
+                window_size = int(3 * sigma) + 1
                 
                 # Create bounds for the drawing window
                 x_min = max(0, xi - window_size // 2)
@@ -413,9 +433,9 @@ class NanoparticleSimulator3D:
                     np.arange(y_min, y_max)
                 )
                 
-                # Calculate the Gaussian values with tighter spread
+                # Calculate the Gaussian values
                 gaussian = final_brightness * np.exp(
-                    -((x_coords - x_pixels)**2 + (y_coords - y_pixels)**2) / (sigma**2)  # Tighter Gaussian spread
+                    -((x_coords - x_pixels)**2 + (y_coords - y_pixels)**2) / (sigma**2)
                 )
                 
                 # Add the Gaussian to the frame
@@ -426,7 +446,6 @@ class NanoparticleSimulator3D:
             
             # Add camera noise if enabled
             if self.add_camera_noise:
-                # Add very small amount of background noise (non-negative)
                 frame = np.maximum(frame + np.random.normal(0.0005, 0.0005, self.frame_size), 0)
             
             # Record pixel value statistics for the first frame
@@ -437,29 +456,29 @@ class NanoparticleSimulator3D:
             p0, p100 = np.percentile(frame, (0.01, 99.99))
             frame_rescaled = np.clip((frame - p0) / (p100 - p0), 0, 1)
             
-            # Apply gamma correction to enhance dim features
-            gamma = 0.7  # Slightly less aggressive gamma
-            frame_gamma = np.power(frame_rescaled, gamma)
+            # Create 16-bit version (0-65535)
+            frame_16bit = (frame_rescaled * 65535.0).astype(np.uint16)
+            frames_16bit.append(frame_16bit)
             
-            # Convert to 8-bit with enhanced contrast
-            frame_8bit = (frame_gamma * 255).astype(np.uint8)
-            
-            # Convert to PIL Image
-            pil_frame = Image.fromarray(frame_8bit, mode='L')
+            # Create 8-bit version for GIF (0-255)
+            frame_8bit = (frame_rescaled * 255).astype(np.uint8)
+            frames.append(Image.fromarray(frame_8bit, mode='L'))
             
             # Print value range for the first frame
             if frame_num == 0:
-                print(f"Frame value range: {frame_8bit.min()}-{frame_8bit.max()}")
+                print(f"Frame value range (8-bit): {frame_8bit.min()}-{frame_8bit.max()}")
+                print(f"Frame value range (16-bit): {frame_16bit.min()}-{frame_16bit.max()}")
                 print(f"Percentiles: 0.01%={p0:.6f}, 99.99%={p100:.6f}")
-            
-            frames.append(pil_frame)
         
         # Print final statistics
         total_time = time.time() - start_time
         print(f"Simulation complete. Total time: {total_time:.1f} seconds")
         print(f"Average time per frame: {total_time/num_frames:.3f} seconds")
         
-        return frames
+        # Convert frames_16bit to numpy array
+        frames_16bit_array = np.stack(frames_16bit)
+        
+        return frames, frames_16bit_array
     
     def _calculate_pixel_statistics(self, frame: np.ndarray) -> None:
         """
@@ -500,7 +519,7 @@ class NanoparticleSimulator3D:
         Save the simulation as a GIF and TIF.
         
         Args:
-            frames: List of frame images.
+            frames: List of frame images (8-bit for GIF).
             filename: The filename to save the simulation as.
         """
         # Save as GIF
@@ -527,27 +546,28 @@ class NanoparticleSimulator3D:
         )
         print(f"Saved GIF to {gif_path}")
         
-        # Save as TIF - keep existing code for TIF saving
+        # Save as 16-bit TIF
         tif_filename = filename.replace('.gif', '.tif')
         tif_path = os.path.join(self.output_dir, tif_filename)
         
-        # Convert frames to numpy arrays with float32 type for 16-bit TIF
-        frame_arrays = [(np.array(frame) / 255.0).astype(np.float32) for frame in frames]
-        
-        # Scale to 16-bit range
-        frame_arrays_16bit = [arr * 65535 for arr in frame_arrays]
-        
-        # Create 16-bit TIF images
-        tif_frames = [Image.fromarray(arr.astype(np.uint16), mode='I;16') for arr in frame_arrays_16bit]
-        
-        # Save as multi-page TIF
-        tif_frames[0].save(
+        # Save using tifffile with explicit 16-bit settings
+        tifffile.imwrite(
             tif_path,
-            save_all=True,
-            append_images=tif_frames[1:],
-            format='TIFF'
+            data=self.frames_16bit_array,
+            photometric='minisblack',
+            planarconfig='contig',
+            dtype=np.uint16,
+            metadata={'axes': 'TYX'}
         )
         print(f"Saved 16-bit TIF to {tif_path}")
+        
+        # Verify saved file
+        saved_array = tifffile.imread(tif_path)
+        print("\nVerifying saved TIF file:")
+        print(f"Shape: {saved_array.shape}")
+        print(f"Data type: {saved_array.dtype}")
+        print(f"Value range: {saved_array.min()}-{saved_array.max()}")
+        print(f"Mean value: {saved_array.mean():.2f}")
         
         # Save metadata
         self._save_metadata(tif_path)
@@ -977,11 +997,11 @@ def main():
     
     # Run simulation
     print("Generating 3D simulation with focal plane effects...")
-    frames = sim.run_simulation(100)  # Generate 100 frames
+    frames, frames_16bit_array = sim.run_simulation(100)  # Generate 100 frames
     
     # Save outputs
     imageio.mimsave(os.path.join(run_dir, 'simulation_v3.gif'), frames)
-    tifffile.imwrite(os.path.join(run_dir, 'simulation_v3.tif'), np.stack(frames))
+    tifffile.imwrite(os.path.join(run_dir, 'simulation_v3.tif'), frames_16bit_array)
     
     # Save metadata
     metadata = {
@@ -1111,7 +1131,7 @@ def create_sequence_for_tracking(num_frames=30, num_particles=50, output_prefix=
     
     # Run simulation
     print(f"Generating tracking sequence with {num_particles} particles...")
-    frames = simulator.run_simulation(num_frames=num_frames)
+    frames, frames_16bit_array = simulator.run_simulation(num_frames=num_frames)
     
     # Save simulation with custom filename
     simulator.save_simulation(frames, filename=f"{output_prefix}.gif")
