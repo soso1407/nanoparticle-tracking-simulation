@@ -22,13 +22,14 @@ from typing import List, Tuple, Optional, Dict, Any
 import os
 import json
 import pandas as pd
-from tif_converter import save_frames_as_tif
+# from tif_converter import save_frames_as_tif
 from scipy.ndimage import gaussian_filter
 from mpl_toolkits.mplot3d import Axes3D
 import time
 import imageio
 import tifffile
 import datetime
+import argparse
 
 
 class ParticleTrack3D:
@@ -1140,10 +1141,133 @@ def create_sequence_for_tracking(num_frames=30, num_particles=50, output_prefix=
     print(f"Track data saved as '{output_prefix}_tracks.csv' and '{output_prefix}_tracks.json'")
 
 
+class SimulationConfig:
+    """Class to store simulation configuration parameters."""
+    def __init__(self, 
+                 temperature=298.15,
+                 viscosity=1.0e-3,
+                 mean_particle_radius=50e-9,
+                 std_particle_radius=10e-9,
+                 frame_size=(512, 512),
+                 pixel_size=100e-9,
+                 z_range=(-10e-6, 10e-6),
+                 focal_plane=0.0,
+                 diffusion_time=0.1,
+                 num_particles=100,
+                 wavelength=550e-9,
+                 numerical_aperture=1.4,
+                 brightness_factor=15000.0,
+                 asymmetry_factor=0.8,
+                 characteristic_length=0.25e-6,
+                 particle_density=1.05e3,
+                 medium_density=1.00e3,
+                 background_noise=0.12,
+                 noise_floor=50.0,
+                 noise_ceiling=2500.0,
+                 add_camera_noise=True,
+                 iteration=1,
+                 run=1):
+        self.temperature = temperature
+        self.viscosity = viscosity
+        self.mean_particle_radius = mean_particle_radius
+        self.std_particle_radius = std_particle_radius
+        self.frame_size = frame_size
+        self.pixel_size = pixel_size
+        self.z_range = z_range
+        self.focal_plane = focal_plane
+        self.diffusion_time = diffusion_time
+        self.num_particles = num_particles
+        self.wavelength = wavelength
+        self.numerical_aperture = numerical_aperture
+        self.brightness_factor = brightness_factor
+        self.asymmetry_factor = asymmetry_factor
+        self.characteristic_length = characteristic_length
+        self.particle_density = particle_density
+        self.medium_density = medium_density
+        self.background_noise = background_noise
+        self.noise_floor = noise_floor
+        self.noise_ceiling = noise_ceiling
+        self.add_camera_noise = add_camera_noise
+        self.iteration = iteration
+        self.run = run
+
+def run_simulation(config=None, num_frames=100):
+    """
+    Run the simulation with the given configuration.
+    
+    Args:
+        config: SimulationConfig object containing simulation parameters
+               If None, default parameters will be used
+        num_frames: Number of frames to simulate
+    
+    Returns:
+        tuple: (simulator, frames, frames_16bit_array)
+    """
+    if config is None:
+        config = SimulationConfig()
+    
+    # Create simulator instance with config parameters
+    sim = NanoparticleSimulator3D(
+        temperature=config.temperature,
+        viscosity=config.viscosity,
+        mean_particle_radius=config.mean_particle_radius,
+        std_particle_radius=config.std_particle_radius,
+        frame_size=config.frame_size,
+        pixel_size=config.pixel_size,
+        z_range=config.z_range,
+        focal_plane=config.focal_plane,
+        diffusion_time=config.diffusion_time,
+        num_particles=config.num_particles,
+        wavelength=config.wavelength,
+        numerical_aperture=config.numerical_aperture,
+        brightness_factor=config.brightness_factor,
+        asymmetry_factor=config.asymmetry_factor,
+        characteristic_length=config.characteristic_length,
+        particle_density=config.particle_density,
+        medium_density=config.medium_density,
+        background_noise=config.background_noise,
+        noise_floor=config.noise_floor,
+        noise_ceiling=config.noise_ceiling,
+        add_camera_noise=config.add_camera_noise,
+        iteration=config.iteration,
+        run=config.run
+    )
+    
+    # Run simulation
+    frames, frames_16bit_array = sim.run_simulation(num_frames)
+    
+    # Generate standard plots
+    sim.plot_3d_positions()
+    sim.plot_size_distribution()
+    sim.plot_depth_vs_brightness()
+    
+    return sim, frames, frames_16bit_array
+
 if __name__ == "__main__":
-    import sys
     import argparse
     
+    parser = argparse.ArgumentParser(description='Run 3D nanoparticle simulation')
+    parser.add_argument('--frames', type=int, default=100, help='Number of frames to simulate')
+    parser.add_argument('--particles', type=int, default=100, help='Number of particles')
+    parser.add_argument('--brightness', type=float, default=15000.0, help='Brightness factor')
+    parser.add_argument('--iteration', type=int, default=1, help='Iteration number')
+    parser.add_argument('--run', type=int, default=1, help='Run number')
+    args = parser.parse_args()
+    
+    # Create configuration with command line arguments
+    config = SimulationConfig(
+        num_particles=args.particles,
+        brightness_factor=args.brightness,
+        iteration=args.iteration,
+        run=args.run
+    )
+    
+    # Run simulation
+    sim, frames, frames_16bit = run_simulation(config, args.frames)
+    
+    # Save outputs
+    sim.save_simulation(frames, filename=f'simulation_v3.gif')
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Run 3D nanoparticle simulation with realistic noise')
     parser.add_argument('--frames', type=int, default=100, help='Number of frames to simulate')
